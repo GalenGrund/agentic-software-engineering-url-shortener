@@ -271,6 +271,31 @@ public sealed class Gate4ReplanningTests : IDisposable
         Assert.Contains(completed.Artifacts, item => item.SupersedesArtifactId == completedRevision.Artifacts.Where(artifact => artifact.ArtifactType == "architecture-design").MaxBy(artifact => artifact.Version)!.Id);
     }
 
+    [Fact]
+    public async Task RollbackSucceedsImmediatelyAfterPlanningReplanningRevision()
+    {
+        var service = CreateService(new TrackingProvider("gate4-provider"));
+        var original = await CompleteWorkflowAsync(service);
+        var architectureV1 = await db.EngineeringArtifacts.SingleAsync(item => item.WorkflowId == original.WorkflowId && item.ArtifactType == "architecture-design" && item.Version == 1);
+
+        var revised = await service.ReviseArtifactAsync(original.WorkflowId, architectureV1.Id, new BrownfieldArtifactRevisionRequest("architecture/v2", "architecture-hash-v2"), CancellationToken.None);
+
+        Assert.Equal(WorkflowState.Planning, revised.State);
+        Assert.Equal(2, revised.PlanRevisions.Count);
+        Assert.Contains(revised.Events, item => item.EventType == "ArtifactSuperseded");
+
+        var rollback = await service.RollbackAsync(revised.WorkflowId, new WorkflowRollbackRequest(architectureV1.Id), CancellationToken.None);
+
+        Assert.Equal(WorkflowState.Planning, rollback.State);
+        Assert.Equal(3, rollback.PlanRevisions.Count);
+        Assert.Contains(rollback.Events, item => item.EventType == "RollbackStarted");
+        Assert.Contains(rollback.Events, item => item.EventType == "RollbackArtifactSelected");
+        // The impacted node was already reset Invalidated -> Ready by the prior revision, so rollback reports impact rather than re-invalidating.
+        Assert.Contains(rollback.Events, item => item.EventType == "NodeImpactIdentified" && item.Details.Contains("state=Ready") && item.Details.Contains("workflow-artifact-rollback"));
+        Assert.Contains(rollback.Artifacts, item => item.ArtifactType == "architecture-design" && item.Version == 3 && item.SupersedesArtifactId != null);
+        Assert.Contains(rollback.Artifacts, item => item.Id == architectureV1.Id);
+    }
+
     private OrchestrationService CreateService(IAgentProvider? provider = null) =>
         new(db, provider ?? new DeterministicAgentProvider(), new FixedTimeProvider());
 

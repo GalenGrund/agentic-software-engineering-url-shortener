@@ -52,6 +52,7 @@ public static class WorkflowStateRules
             (WorkflowState.WaitingForApproval, WorkflowState.SafeStopped) => true,
             (WorkflowState.Blocked, WorkflowState.Replanning) => true,
             (WorkflowState.Replanning, WorkflowState.Planning) => true,
+            (WorkflowState.Planning, WorkflowState.RollingBack) => true,
             (WorkflowState.Failed, WorkflowState.Recovering) => true,
             (WorkflowState.Recovering, WorkflowState.Replanning) => true,
             (WorkflowState.Recovering, WorkflowState.RollingBack) => true,

@@ -165,6 +165,42 @@ public sealed class ApiIntegrationTests : IClassFixture<ApiFactory>
     }
 
     [Fact]
+    public async Task BrownfieldRevisionRollbackApiSucceedsWhileWorkflowIsPlanning()
+    {
+        using var create = await client.PostAsJsonAsync("/api/workflows/greenfield", new { requirement = "Create a short URL" });
+        using var created = JsonDocument.Parse(await create.Content.ReadAsStringAsync());
+        var workflowId = created.RootElement.GetProperty("workflowId").GetGuid();
+
+        JsonDocument? completed = null;
+        for (var attempt = 0; attempt < 10; attempt++)
+        {
+            completed?.Dispose();
+            completed = JsonDocument.Parse(await (await client.PostAsync($"/api/workflows/{workflowId}/advance", null)).Content.ReadAsStringAsync());
+            if (completed.RootElement.GetProperty("state").GetString() == "Completed") break;
+        }
+
+        using (completed)
+        {
+            var architectureId = completed!.RootElement.GetProperty("artifacts").EnumerateArray()
+                .Single(item => item.GetProperty("artifactType").GetString() == "architecture-design" && item.GetProperty("version").GetInt32() == 1)
+                .GetProperty("id").GetGuid();
+
+            using var revisedResponse = await client.PostAsJsonAsync($"/api/workflows/{workflowId}/brownfield/artifacts/{architectureId}/revise", new { contentReference = "architecture/api-v2", contentHash = "architecture-api-hash-v2" });
+            using var revised = JsonDocument.Parse(await revisedResponse.Content.ReadAsStringAsync());
+            Assert.Equal(HttpStatusCode.OK, revisedResponse.StatusCode);
+            Assert.Equal("Planning", revised.RootElement.GetProperty("state").GetString());
+            Assert.Equal(2, revised.RootElement.GetProperty("planRevisions").GetArrayLength());
+
+            using var rollbackResponse = await client.PostAsJsonAsync($"/api/workflows/{workflowId}/rollback", new { artifactId = architectureId });
+            Assert.Equal(HttpStatusCode.OK, rollbackResponse.StatusCode);
+            using var rollback = JsonDocument.Parse(await rollbackResponse.Content.ReadAsStringAsync());
+            Assert.Equal("Planning", rollback.RootElement.GetProperty("state").GetString());
+            Assert.Equal(3, rollback.RootElement.GetProperty("planRevisions").GetArrayLength());
+            Assert.Contains(rollback.RootElement.GetProperty("events").EnumerateArray(), item => item.GetProperty("eventType").GetString() == "RollbackStarted");
+        }
+    }
+
+    [Fact]
     public async Task Gate5ClarificationApiBlocksAndResumesAmbiguousRequirement()
     {
         using var create = await client.PostAsJsonAsync("/api/workflows/greenfield", new { requirement = "Make shortened URLs expire." });

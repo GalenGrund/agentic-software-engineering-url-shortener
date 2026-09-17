@@ -64,6 +64,19 @@ public sealed class FoundationInvariantTests
     }
 
     [Fact]
+    public void Workflow_AllowsRollbackDuringPlanningReplanningCycle()
+    {
+        var workflow = new Workflow("rollback-planning", DateTimeOffset.UtcNow);
+
+        workflow.TransitionTo(WorkflowState.Planning);
+        workflow.TransitionTo(WorkflowState.RollingBack);
+        workflow.TransitionTo(WorkflowState.Replanning);
+        workflow.TransitionTo(WorkflowState.Planning);
+
+        Assert.Equal(WorkflowState.Planning, workflow.State);
+    }
+
+    [Fact]
     public void FoundationalModels_RejectMissingRequiredValues()
     {
         Assert.Throws<ArgumentException>(() => new PlanRevision(Guid.Empty, 1, DateTimeOffset.UtcNow));
