@@ -20,6 +20,9 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
     public DbSet<Approval> Approvals => Set<Approval>();
     public DbSet<PolicyEvaluation> PolicyEvaluations => Set<PolicyEvaluation>();
     public DbSet<ValidationResult> ValidationResults => Set<ValidationResult>();
+    public DbSet<ActionProposal> ActionProposals => Set<ActionProposal>();
+    public DbSet<ChangeSet> ChangeSets => Set<ChangeSet>();
+    public DbSet<ChangeSetAuthorization> ChangeSetAuthorizations => Set<ChangeSetAuthorization>();
 
     public override int SaveChanges(bool acceptAllChangesOnSuccess)
     {
@@ -143,6 +146,37 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             entity.HasKey(approval => approval.Id);
             entity.Property(approval => approval.ApproverRole).HasMaxLength(100).IsRequired();
             entity.Property(approval => approval.Rationale).HasMaxLength(2000);
+        });
+        modelBuilder.Entity<ActionProposal>(entity =>
+        {
+            entity.ToTable("Orchestration_ActionProposals");
+            entity.HasKey(proposal => proposal.Id);
+            entity.Property(proposal => proposal.Action).HasMaxLength(1000).IsRequired();
+            entity.HasIndex(proposal => new { proposal.WorkflowId, proposal.WorkflowNodeId, proposal.PlanRevisionId });
+            entity.HasOne<Workflow>().WithMany().HasForeignKey(proposal => proposal.WorkflowId).OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne<WorkflowNode>().WithMany().HasForeignKey(proposal => proposal.WorkflowNodeId).OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne<PlanRevision>().WithMany().HasForeignKey(proposal => proposal.PlanRevisionId).OnDelete(DeleteBehavior.Restrict);
+        });
+        modelBuilder.Entity<ChangeSet>(entity =>
+        {
+            entity.ToTable("Orchestration_ChangeSets");
+            entity.HasKey(changeSet => changeSet.Id);
+            entity.Property(changeSet => changeSet.Summary).HasMaxLength(2000).IsRequired();
+            entity.Property(changeSet => changeSet.Scope).HasMaxLength(1000).IsRequired();
+            entity.HasIndex(changeSet => changeSet.ActionProposalId).IsUnique();
+            entity.HasOne<ActionProposal>().WithMany().HasForeignKey(changeSet => changeSet.ActionProposalId).OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne<Workflow>().WithMany().HasForeignKey(changeSet => changeSet.WorkflowId).OnDelete(DeleteBehavior.Restrict);
+        });
+        modelBuilder.Entity<ChangeSetAuthorization>(entity =>
+        {
+            entity.ToTable("Orchestration_ChangeSetAuthorizations");
+            entity.HasKey(authorization => authorization.Id);
+            entity.Property(authorization => authorization.ChangeSetFingerprint).HasMaxLength(128).IsRequired();
+            entity.HasIndex(authorization => authorization.ChangeSetId).IsUnique();
+            entity.HasIndex(authorization => new { authorization.WorkflowId, authorization.WorkflowNodeId, authorization.PlanRevisionId });
+            entity.HasOne<ActionProposal>().WithMany().HasForeignKey(authorization => authorization.ActionProposalId).OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne<ChangeSet>().WithMany().HasForeignKey(authorization => authorization.ChangeSetId).OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne<Approval>().WithMany().HasForeignKey(authorization => authorization.ApprovalId).OnDelete(DeleteBehavior.Restrict);
         });
         modelBuilder.Entity<PolicyEvaluation>(entity =>
         {

@@ -33,7 +33,7 @@
 
 - [x] 5.1 Define the common agent execution contract and provider compatibility declarations
 - [x] 5.2 Implement the deterministic provider for repeatable testing, ambiguity handling, failure injection, and credential-free end-to-end execution
-- [ ] 5.3 Add structured ActionProposal and ChangeSet handling before privileged execution is allowed
+- [x] 5.3 Add structured ActionProposal and ChangeSet handling before privileged execution is allowed
 - [x] 5.4 Record provider transitions and reject fallback to providers not explicitly declared compatible
 
 ## 6. Policy, Approval, Retry, and Recovery [MUST HAVE]

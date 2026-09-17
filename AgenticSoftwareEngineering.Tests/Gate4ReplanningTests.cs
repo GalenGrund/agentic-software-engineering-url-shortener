@@ -221,13 +221,14 @@ public sealed class Gate4ReplanningTests : IDisposable
         var service = CreateService(provider);
         var original = await CompleteWorkflowAsync(service);
         var implementation = await db.EngineeringArtifacts.SingleAsync(item => item.WorkflowId == original.WorkflowId && item.ArtifactType == "implementation-preparation" && item.Version == 1);
+        var priorPrivilegedApplyCount = provider.Requests.Count(request => request.Mode == AgentExecutionMode.Apply && request.TaskType == "implementation-preparation");
 
         var replanned = await service.ReviseArtifactAsync(original.WorkflowId, implementation.Id, new BrownfieldArtifactRevisionRequest("implementation/v2", "implementation-hash-v2", true), CancellationToken.None);
         var waiting = await service.AdvanceAsync(replanned.WorkflowId, CancellationToken.None);
 
         Assert.Equal(WorkflowState.WaitingForApproval, waiting.State);
         Assert.Contains(waiting.Approvals, approval => approval.PlanRevisionId == waiting.PlanRevisions.Single(item => item.Revision == 2).Id && approval.Decision == ApprovalDecision.Pending);
-        Assert.DoesNotContain(provider.Requests, request => request.Attempt > 1 && request.TaskType == "implementation-preparation");
+        Assert.Equal(priorPrivilegedApplyCount, provider.Requests.Count(request => request.Mode == AgentExecutionMode.Apply && request.TaskType == "implementation-preparation"));
     }
 
     [Fact]

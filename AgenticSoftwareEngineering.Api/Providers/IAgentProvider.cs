@@ -9,7 +9,18 @@ public sealed record AgentExecutionRequest(
     string Instructions,
     IReadOnlyList<string> UpstreamArtifactReferences,
     int Attempt,
-    string? EffectiveRequirement = null);
+    string? EffectiveRequirement = null,
+    AgentExecutionMode Mode = AgentExecutionMode.Apply,
+    Guid? AuthorizedChangeSetId = null,
+    string? AuthorizedChangeSetFingerprint = null);
+
+public enum AgentExecutionMode
+{
+    Proposal = 1,
+    Apply = 2
+}
+
+public sealed record ProposedPrivilegedOperation(string OperationContent, string Summary, string Scope);
 
 public sealed record AgentExecutionResponse(
     bool Succeeded,
@@ -18,7 +29,8 @@ public sealed record AgentExecutionResponse(
     string ContentReference,
     string ContentHash,
     string? FailureReason = null,
-    FailureClassification FailureClassification = FailureClassification.Permanent);
+    FailureClassification FailureClassification = FailureClassification.Permanent,
+    ProposedPrivilegedOperation? ProposedOperation = null);
 
 public interface IAgentProvider
 {
@@ -47,7 +59,10 @@ public sealed class DeterministicAgentProvider : IAgentProvider
         };
         var reference = $"deterministic://{request.TaskType}/{request.WorkflowId:N}/{request.Attempt}";
         var hash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(output)));
-        return Task.FromResult(new AgentExecutionResponse(true, output, artifactType, reference, hash));
+        var proposedOperation = request.TaskType == "implementation-preparation" && request.Mode == AgentExecutionMode.Proposal
+            ? new ProposedPrivilegedOperation("prepare-approved-implementation-context", "Prepare the approved implementation context.", "implementation-preparation")
+            : null;
+        return Task.FromResult(new AgentExecutionResponse(true, output, artifactType, reference, hash, ProposedOperation: proposedOperation));
     }
 }
 

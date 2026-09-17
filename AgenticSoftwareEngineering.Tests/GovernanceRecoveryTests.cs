@@ -42,7 +42,8 @@ public sealed class GovernanceRecoveryTests : IDisposable
 
         Assert.Equal(WorkflowState.WaitingForApproval, status.State);
         Assert.Contains(status.Approvals, approval => approval.Risk == RiskLevel.High && approval.Decision == ApprovalDecision.Pending && approval.PlanRevisionId is not null);
-        Assert.DoesNotContain(provider.Requests, request => request.TaskType == "implementation-preparation");
+        Assert.Contains(provider.Requests, request => request.TaskType == "implementation-preparation" && request.Mode == AgentExecutionMode.Proposal);
+        Assert.DoesNotContain(provider.Requests, request => request.TaskType == "implementation-preparation" && request.Mode == AgentExecutionMode.Apply);
     }
 
     [Fact]
@@ -105,7 +106,7 @@ public sealed class GovernanceRecoveryTests : IDisposable
         await Assert.ThrowsAsync<InvalidOperationException>(() =>
             service.DecideApprovalAsync(status.WorkflowId, approval.Id, new ApprovalDecisionRequest(true, "Stale revision attempt"), CancellationToken.None));
 
-        Assert.DoesNotContain(provider.Requests, request => request.TaskType == "implementation-preparation");
+        Assert.DoesNotContain(provider.Requests, request => request.TaskType == "implementation-preparation" && request.Mode == AgentExecutionMode.Apply);
         Assert.Contains((await service.GetStatusAsync(status.WorkflowId, CancellationToken.None)).Policies, policy => policy.PolicyName == "gate3-post-approval-authorization" && !policy.Allowed);
     }
 
@@ -121,7 +122,7 @@ public sealed class GovernanceRecoveryTests : IDisposable
         status = await service.DecideApprovalAsync(status.WorkflowId, approval.Id, new ApprovalDecisionRequest(false, "Rejected for review"), CancellationToken.None);
 
         Assert.Equal(WorkflowState.SafeStopped, status.State);
-        Assert.DoesNotContain(provider.Requests, request => request.TaskType == "implementation-preparation");
+        Assert.DoesNotContain(provider.Requests, request => request.TaskType == "implementation-preparation" && request.Mode == AgentExecutionMode.Apply);
         Assert.Contains(status.Events, item => item.EventType == "HumanEscalationRequired");
     }
 

@@ -82,7 +82,7 @@ public sealed class OrchestrationServiceTests : IDisposable
 
         Assert.Equal(WorkflowState.Completed, status.State);
         Assert.All(status.Nodes, node => Assert.Equal(WorkflowNodeState.Succeeded, node.State));
-        Assert.Equal(6, status.Executions.Count);
+        Assert.Equal(7, status.Executions.Count);
         Assert.Equal(6, status.Artifacts.Count);
         Assert.Contains(status.Validations, validation => validation.ValidationName == "validation" && validation.Passed);
         Assert.Contains(status.Validations, validation => validation.ValidationName == "release-readiness" && validation.Passed);
@@ -149,7 +149,7 @@ public sealed class OrchestrationServiceTests : IDisposable
         }
 
         var architectureRequest = capturingProvider.Requests.Single(request => request.TaskType == "architecture-design");
-        var implementationRequest = capturingProvider.Requests.Single(request => request.TaskType == "implementation-preparation");
+        var implementationRequest = capturingProvider.Requests.Single(request => request.TaskType == "implementation-preparation" && request.Mode == AgentExecutionMode.Apply);
         var validationRequest = capturingProvider.Requests.Single(request => request.TaskType == "validation");
         Assert.Single(architectureRequest.UpstreamArtifactReferences);
         Assert.Single(implementationRequest.UpstreamArtifactReferences);

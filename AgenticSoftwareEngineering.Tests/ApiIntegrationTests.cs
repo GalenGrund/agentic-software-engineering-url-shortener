@@ -86,7 +86,7 @@ public sealed class ApiIntegrationTests : IClassFixture<ApiFactory>
         using (final)
         {
             Assert.Equal("Completed", final!.RootElement.GetProperty("state").GetString());
-            Assert.Equal(6, final.RootElement.GetProperty("executions").GetArrayLength());
+            Assert.Equal(7, final.RootElement.GetProperty("executions").GetArrayLength());
             Assert.Equal(6, final.RootElement.GetProperty("artifacts").GetArrayLength());
             Assert.Contains(final.RootElement.GetProperty("validations").EnumerateArray(), validation =>
                 validation.GetProperty("validationName").GetString() == "release-readiness" && validation.GetProperty("passed").GetBoolean());
@@ -200,7 +200,7 @@ public sealed class ApiIntegrationTests : IClassFixture<ApiFactory>
         {
             Assert.Equal(HttpStatusCode.OK, metricsResponse.StatusCode);
             Assert.True(metrics.RootElement.GetProperty("completed").GetBoolean());
-            Assert.Equal(6, metrics.RootElement.GetProperty("providerExecutionCount").GetInt32());
+            Assert.Equal(7, metrics.RootElement.GetProperty("providerExecutionCount").GetInt32());
             Assert.True(metrics.RootElement.GetProperty("workflowLatencyMilliseconds").GetDouble() >= 0);
             Assert.True(metrics.RootElement.GetProperty("providerExecutionLatencyMilliseconds").GetDouble() >= 0);
         }

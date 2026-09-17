@@ -77,4 +77,84 @@ public sealed class FoundationInvariantTests
         Assert.Throws<ArgumentException>(() => new PolicyEvaluation(Guid.Empty, "policy", true, "allowed", DateTimeOffset.UtcNow));
         Assert.Throws<ArgumentException>(() => new ValidationResult(Guid.Empty, "validation", true, "passed", DateTimeOffset.UtcNow));
     }
+
+    [Fact]
+    public void ActionProposalRequiresMatchingApprovedPlanBoundAuthorization()
+    {
+        var workflowId = Guid.NewGuid();
+        var nodeId = Guid.NewGuid();
+        var planRevisionId = Guid.NewGuid();
+        var proposal = new ActionProposal(workflowId, nodeId, planRevisionId, "modify repository", RiskLevel.High, "provider", Guid.NewGuid(), DateTimeOffset.UtcNow);
+        var changeSet = new ChangeSet(workflowId, nodeId, planRevisionId, proposal.Id, "provider", proposal.ProposalExecutionId, RiskLevel.High, PrivilegedOperationType.ImplementationPreparation, "content", "summary", "scope", DateTimeOffset.UtcNow);
+        proposal.AttachChangeSet(changeSet.Id);
+        var pendingApproval = new Approval(workflowId, nodeId, planRevisionId, "modify repository", RiskLevel.High, "reviewer", DateTimeOffset.UtcNow);
+        pendingApproval.BindToChangeSet(changeSet);
+
+        Assert.Throws<InvalidOperationException>(() => proposal.Authorize(pendingApproval, changeSet, DateTimeOffset.UtcNow));
+        pendingApproval.Decide(ApprovalDecision.Approved, "Approved for test", DateTimeOffset.UtcNow);
+        proposal.Authorize(pendingApproval, changeSet, DateTimeOffset.UtcNow);
+
+        Assert.Equal(ActionProposalState.Authorized, proposal.State);
+    }
+
+    [Fact]
+    public void ActionProposalRejectsApprovalFromAnotherScope()
+    {
+        var workflowId = Guid.NewGuid();
+        var nodeId = Guid.NewGuid();
+        var planRevisionId = Guid.NewGuid();
+        var proposal = new ActionProposal(workflowId, nodeId, planRevisionId, "modify repository", RiskLevel.High, "provider", Guid.NewGuid(), DateTimeOffset.UtcNow);
+        var changeSet = new ChangeSet(workflowId, nodeId, planRevisionId, proposal.Id, "provider", proposal.ProposalExecutionId, RiskLevel.High, PrivilegedOperationType.ImplementationPreparation, "content", "summary", "scope", DateTimeOffset.UtcNow);
+        proposal.AttachChangeSet(changeSet.Id);
+        var approval = new Approval(workflowId, nodeId, planRevisionId, "modify repository", RiskLevel.High, "reviewer", DateTimeOffset.UtcNow);
+        var otherChangeSet = new ChangeSet(workflowId, nodeId, planRevisionId, Guid.NewGuid(), "provider", Guid.NewGuid(), RiskLevel.High, PrivilegedOperationType.ImplementationPreparation, "different-content", "summary", "scope", DateTimeOffset.UtcNow);
+        approval.BindToChangeSet(otherChangeSet);
+        approval.Decide(ApprovalDecision.Approved, "Wrong scope", DateTimeOffset.UtcNow);
+
+        Assert.Throws<InvalidOperationException>(() => proposal.Authorize(approval, changeSet, DateTimeOffset.UtcNow));
+    }
+
+    [Fact]
+    public void ChangeSetRequiresProposalAndScope()
+    {
+        var proposalId = Guid.NewGuid();
+        var changeSet = new ChangeSet(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), proposalId, "provider", Guid.NewGuid(), RiskLevel.Medium, PrivilegedOperationType.ImplementationPreparation, "content", "Update API contract", "orchestration", DateTimeOffset.UtcNow);
+
+        Assert.Equal(proposalId, changeSet.ActionProposalId);
+        Assert.Throws<ArgumentException>(() => new ChangeSet(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), proposalId, "provider", Guid.NewGuid(), RiskLevel.Medium, PrivilegedOperationType.ImplementationPreparation, "content", "", "orchestration", DateTimeOffset.UtcNow));
+    }
+
+    [Fact]
+    public void MediumRiskPolicyAuthorizationPersistsExactFingerprintEvidence()
+    {
+        var workflowId = Guid.NewGuid();
+        var nodeId = Guid.NewGuid();
+        var planRevisionId = Guid.NewGuid();
+        var proposal = new ActionProposal(workflowId, nodeId, planRevisionId, "prepare implementation", RiskLevel.Medium, "provider", Guid.NewGuid(), DateTimeOffset.UtcNow);
+        var changeSet = new ChangeSet(workflowId, nodeId, planRevisionId, proposal.Id, "provider", proposal.ProposalExecutionId, RiskLevel.Medium, PrivilegedOperationType.ImplementationPreparation, "content", "summary", "scope", DateTimeOffset.UtcNow);
+        proposal.AttachChangeSet(changeSet.Id);
+        var authorization = new ChangeSetAuthorization(workflowId, nodeId, planRevisionId, proposal.Id, changeSet.Id, changeSet.Fingerprint, ChangeSetAuthorizationMechanism.PolicyAuthorized, null, DateTimeOffset.UtcNow);
+
+        proposal.AuthorizeByPolicy(changeSet, authorization, DateTimeOffset.UtcNow);
+
+        Assert.Equal(ActionProposalState.Authorized, proposal.State);
+        Assert.Equal(changeSet.Fingerprint, authorization.ChangeSetFingerprint);
+        Assert.Null(authorization.ApprovalId);
+    }
+
+    [Fact]
+    public void ChangeSetFingerprintChangesWhenMeaningfulContentChanges()
+    {
+        var workflowId = Guid.NewGuid();
+        var nodeId = Guid.NewGuid();
+        var planRevisionId = Guid.NewGuid();
+        var proposalId = Guid.NewGuid();
+        var executionId = Guid.NewGuid();
+        var first = new ChangeSet(workflowId, nodeId, planRevisionId, proposalId, "provider", executionId, RiskLevel.Medium, PrivilegedOperationType.ImplementationPreparation, "content-v1", "summary", "scope", DateTimeOffset.UtcNow);
+        var second = new ChangeSet(workflowId, nodeId, planRevisionId, proposalId, "provider", executionId, RiskLevel.Medium, PrivilegedOperationType.ImplementationPreparation, "content-v2", "summary", "scope", DateTimeOffset.UtcNow);
+
+        Assert.NotEqual(first.Fingerprint, second.Fingerprint);
+        Assert.True(first.HasValidFingerprint());
+        Assert.True(second.HasValidFingerprint());
+    }
 }

@@ -89,6 +89,26 @@ public sealed class OrchestrationService(
         AddEvent(workflowId, request.Approved ? "ApprovalApproved" : "ApprovalRejected", node.Name, timeProvider.GetUtcNow());
         if (request.Approved)
         {
+            if (approval.ActionProposalId is Guid proposalId && approval.ChangeSetId is Guid approvalChangeSetId)
+            {
+                var proposal = await db.ActionProposals.SingleAsync(item => item.Id == proposalId && item.WorkflowId == workflowId, cancellationToken);
+                var changeSet = await db.ChangeSets.SingleAsync(item => item.Id == approvalChangeSetId && item.ActionProposalId == proposal.Id && item.WorkflowId == workflowId, cancellationToken);
+                ValidatePrivilegedChangeSet(workflow, node, activePlan, proposal, changeSet, approval.ChangeSetFingerprint);
+                var authorization = new ChangeSetAuthorization(workflowId, node.Id, activePlan.Id, proposal.Id, changeSet.Id, changeSet.Fingerprint, ChangeSetAuthorizationMechanism.HumanApproved, approval.Id, timeProvider.GetUtcNow());
+                proposal.Authorize(approval, changeSet, timeProvider.GetUtcNow());
+                db.ChangeSetAuthorizations.Add(authorization);
+                db.PolicyEvaluations.Add(new PolicyEvaluation(workflowId, node.Id, "gate3-post-approval-authorization", node.Risk, true, $"Approved ChangeSet {changeSet.Id} for plan revision {activePlan.Id}.", timeProvider.GetUtcNow()));
+                AddEvent(workflowId, "PostApprovalAuthorizationAllowed", $"{node.Name}:plan-revision={activePlan.Id};change-set={changeSet.Id};fingerprint={changeSet.Fingerprint}", timeProvider.GetUtcNow());
+                AddEvent(workflowId, "ChangeSetHumanAuthorized", $"proposal={proposal.Id};change-set={changeSet.Id};fingerprint={changeSet.Fingerprint}", timeProvider.GetUtcNow());
+                node.TransitionTo(WorkflowNodeState.Executing);
+                TransitionWorkflow(workflow, WorkflowState.Executing, "WorkflowStateChanged", "WaitingForApproval -> Executing");
+                await db.SaveChangesAsync(cancellationToken);
+                var authorizedProvider = GetRegisteredProvider(proposal.ProviderName)
+                    ?? throw new InvalidOperationException("The authorized proposal provider is not registered.");
+                await ExecuteAuthorizedPrivilegedNodeAsync(workflow, node, proposal, changeSet, authorizedProvider, await db.WorkflowNodes.Where(item => item.WorkflowId == workflowId).ToListAsync(cancellationToken), await db.Dependencies.Where(item => item.SuccessorNodeId == node.Id).ToListAsync(cancellationToken), cancellationToken);
+                await db.SaveChangesAsync(cancellationToken);
+                return await GetStatusAsync(workflowId, cancellationToken);
+            }
             db.PolicyEvaluations.Add(new PolicyEvaluation(workflowId, node.Id, "gate3-post-approval-authorization", node.Risk, true, $"Approved by approval {approval.Id} for plan revision {activePlan.Id}.", timeProvider.GetUtcNow()));
             AddEvent(workflowId, "PostApprovalAuthorizationAllowed", $"{node.Name}:plan-revision={activePlan.Id}", timeProvider.GetUtcNow());
             node.TransitionTo(WorkflowNodeState.Executing);
@@ -100,6 +120,12 @@ public sealed class OrchestrationService(
         }
         else
         {
+            if (approval.ActionProposalId is Guid rejectedProposalId)
+            {
+                var rejectedProposal = await db.ActionProposals.SingleAsync(item => item.Id == rejectedProposalId && item.WorkflowId == workflowId, cancellationToken);
+                rejectedProposal.Reject(timeProvider.GetUtcNow());
+                AddEvent(workflowId, "ChangeSetRejected", $"proposal={rejectedProposal.Id};change-set={approval.ChangeSetId}", timeProvider.GetUtcNow());
+            }
             node.TransitionTo(WorkflowNodeState.Blocked);
             TransitionWorkflow(workflow, WorkflowState.SafeStopped, "SafeStopped", "High-risk approval rejected");
             AddEvent(workflowId, "HumanEscalationRequired", "Approval rejected; authorized recovery is required.", timeProvider.GetUtcNow());
@@ -167,6 +193,10 @@ public sealed class OrchestrationService(
             .ToList();
         var planRevisions = await db.PlanRevisions.AsNoTracking().Where(item => item.WorkflowId == workflowId).OrderBy(item => item.Revision).ToListAsync(cancellationToken);
         var artifactDependencies = await db.ArtifactDependencies.AsNoTracking().Where(item => artifacts.Select(artifact => artifact.Id).Contains(item.DependentArtifactId)).ToListAsync(cancellationToken);
+        var actionProposals = await db.ActionProposals.AsNoTracking().Where(item => item.WorkflowId == workflowId).ToListAsync(cancellationToken);
+        var proposalIds = actionProposals.Select(item => item.Id).ToArray();
+        var changeSets = await db.ChangeSets.AsNoTracking().Where(item => item.WorkflowId == workflowId).ToListAsync(cancellationToken);
+        var authorizations = await db.ChangeSetAuthorizations.AsNoTracking().Where(item => item.WorkflowId == workflowId).ToListAsync(cancellationToken);
 
         return new WorkflowStatusResponse(
             workflow.Id,
@@ -178,12 +208,15 @@ public sealed class OrchestrationService(
             artifacts.Select(item => new ArtifactStatusResponse(item.Id, item.ArtifactType, item.Version, item.ContentReference, item.ContentHash, item.ProducerNodeId, item.ProducerExecutionId, item.SupersedesArtifactId, item.ValidationStatus)).ToList(),
             validations.Select(item => new ValidationStatusResponse(item.Id, item.ValidationName, item.Passed, item.Details, item.ValidatedAtUtc)).ToList(),
             policies.Select(item => new PolicyStatusResponse(item.Id, item.WorkflowNodeId, item.PolicyName, item.Risk, item.Allowed, item.Reason, item.EvaluatedAtUtc)).ToList(),
-            approvals.Select(item => new ApprovalStatusResponse(item.Id, item.WorkflowNodeId, item.PlanRevisionId, item.Action, item.Risk, item.Decision, item.ApproverRole, item.Rationale, item.RequestedAtUtc, item.DecidedAtUtc)).ToList(),
+            approvals.Select(item => new ApprovalStatusResponse(item.Id, item.WorkflowNodeId, item.PlanRevisionId, item.ActionProposalId, item.ChangeSetId, item.ChangeSetFingerprint, item.Action, item.Risk, item.Decision, item.ApproverRole, item.Rationale, item.RequestedAtUtc, item.DecidedAtUtc)).ToList(),
             events.Select(item => new EventStatusResponse(item.Id, item.EventType, item.Details, item.OccurredAtUtc)).ToList(),
             planRevisions.Select(item => new PlanRevisionStatusResponse(item.Id, item.Revision, item.SupersedesRevisionId, item.CreatedAtUtc)).ToList(),
             artifactDependencies.Select(item => new ArtifactDependencyStatusResponse(item.Id, item.ArtifactId, item.DependentArtifactId)).ToList(),
             events.Any(item => item.EventType == "ArtifactSuperseded") ? "brownfield" : "greenfield",
-            GetClarificationStatus(events));
+            GetClarificationStatus(events),
+            actionProposals.Select(item => new ActionProposalStatusResponse(item.Id, item.WorkflowNodeId, item.PlanRevisionId, item.ChangeSetId, item.AppliedExecutionId, item.ProviderName, item.ProposalExecutionId, item.Risk, item.State, item.ProposedAtUtc, item.DecidedAtUtc)).ToList(),
+            changeSets.Select(item => new ChangeSetStatusResponse(item.Id, item.ActionProposalId, item.WorkflowNodeId, item.PlanRevisionId, item.ProviderName, item.ProposalExecutionId, item.Risk, item.OperationType, item.OperationContent, item.Summary, item.Scope, item.Fingerprint, item.CreatedAtUtc)).ToList(),
+            authorizations.Select(item => new ChangeSetAuthorizationStatusResponse(item.Id, item.ActionProposalId, item.ChangeSetId, item.WorkflowNodeId, item.PlanRevisionId, item.Mechanism, item.ApprovalId, item.ChangeSetFingerprint, item.AuthorizedAtUtc)).ToList());
     }
 
     public async Task<WorkflowStatusResponse> ProvideClarificationAsync(Guid workflowId, ClarificationRequest request, CancellationToken cancellationToken)
@@ -290,6 +323,23 @@ public sealed class OrchestrationService(
             recoveryDurations.Count > 0 ? recoveryDurations.Average(item => item.TotalMilliseconds) : null);
     }
 
+    public async Task<WorkflowStatusResponse> ApplyAuthorizedProposalAsync(Guid workflowId, Guid proposalId, CancellationToken cancellationToken)
+    {
+        var workflow = await GetWorkflowAsync(workflowId, cancellationToken);
+        var proposal = await db.ActionProposals.SingleOrDefaultAsync(item => item.Id == proposalId && item.WorkflowId == workflowId, cancellationToken)
+            ?? throw new KeyNotFoundException($"Action proposal '{proposalId}' was not found.");
+        var changeSet = await db.ChangeSets.SingleOrDefaultAsync(item => item.ActionProposalId == proposal.Id && item.WorkflowId == workflowId, cancellationToken)
+            ?? throw new KeyNotFoundException($"ChangeSet for proposal '{proposalId}' was not found.");
+        var node = await db.WorkflowNodes.SingleAsync(item => item.Id == proposal.WorkflowNodeId, cancellationToken);
+        var nodes = await db.WorkflowNodes.Where(item => item.WorkflowId == workflowId).ToListAsync(cancellationToken);
+        var dependencies = await GetDependenciesAsync(nodes, cancellationToken);
+        var executionProvider = GetRegisteredProvider(proposal.ProviderName)
+            ?? throw new InvalidOperationException("The authorized proposal provider is not registered.");
+        await ExecuteAuthorizedPrivilegedNodeAsync(workflow, node, proposal, changeSet, executionProvider, nodes, dependencies, cancellationToken);
+        await db.SaveChangesAsync(cancellationToken);
+        return await GetStatusAsync(workflowId, cancellationToken);
+    }
+
     public async Task<WorkflowStatusResponse> ReviseArtifactAsync(Guid workflowId, Guid artifactId, BrownfieldArtifactRevisionRequest request, CancellationToken cancellationToken)
     {
         var workflow = await GetWorkflowAsync(workflowId, cancellationToken);
@@ -353,16 +403,20 @@ public sealed class OrchestrationService(
 
     private async Task ExecuteNodeAsync(Workflow workflow, WorkflowNode node, IReadOnlyList<WorkflowNode> nodes, IReadOnlyList<Dependency> dependencies, CancellationToken cancellationToken, bool alreadyExecuting = false)
     {
+        var governedPrivilegedNode = node.TaskType == "implementation-preparation" && node.Risk is RiskLevel.Medium or RiskLevel.High;
         if (!alreadyExecuting)
         {
-            await ApplyPolicyGateAsync(workflow, node, cancellationToken);
-            if (workflow.State != WorkflowState.Executing)
+            if (!governedPrivilegedNode)
             {
-                return;
+                await ApplyPolicyGateAsync(workflow, node, cancellationToken);
+                if (workflow.State != WorkflowState.Executing)
+                {
+                    return;
+                }
             }
             node.TransitionTo(WorkflowNodeState.Executing);
         }
-        AddEvent(workflow.Id, "NodeExecutionStarted", node.Name, timeProvider.GetUtcNow());
+        AddEvent(workflow.Id, governedPrivilegedNode ? "ActionProposalRequested" : "NodeExecutionStarted", node.Name, timeProvider.GetUtcNow());
         var startedAt = timeProvider.GetUtcNow();
         var attempt = await db.AgentExecutions.CountAsync(item => item.WorkflowNodeId == node.Id, cancellationToken) + 1;
         var execution = new AgentExecution(node.Id, provider.Name, attempt, startedAt);
@@ -374,10 +428,16 @@ public sealed class OrchestrationService(
             .ToArray();
         var upstreamArtifacts = await GetEffectiveUpstreamArtifactsAsync(workflow.Id, predecessorNodeIds, cancellationToken);
         var upstreamReferences = upstreamArtifacts.Select(artifact => artifact.ContentReference).ToList();
-            var request = new AgentExecutionRequest(workflow.Id, node.Id, node.TaskType, TaskInstructions[node.TaskType], upstreamReferences, execution.Attempt, await GetEffectiveRequirementAsync(workflow.Id, cancellationToken));
+            var request = new AgentExecutionRequest(workflow.Id, node.Id, node.TaskType, TaskInstructions[node.TaskType], upstreamReferences, execution.Attempt, await GetEffectiveRequirementAsync(workflow.Id, cancellationToken), governedPrivilegedNode ? AgentExecutionMode.Proposal : AgentExecutionMode.Apply);
         var response = await provider.ExecuteAsync(request, cancellationToken);
         execution.Complete(response.Succeeded ? AgentExecutionStatus.Succeeded : AgentExecutionStatus.Failed, timeProvider.GetUtcNow(), response.Output);
         AddEvent(workflow.Id, response.Succeeded ? "ProviderExecutionCompleted" : "ProviderExecutionFailed", node.Name, timeProvider.GetUtcNow());
+
+            if (governedPrivilegedNode && response.Succeeded)
+            {
+                await HandlePrivilegedProposalAsync(workflow, node, execution, provider, response, upstreamArtifacts, cancellationToken);
+                return;
+            }
 
         if (!response.Succeeded)
         {
@@ -493,12 +553,13 @@ public sealed class OrchestrationService(
 
     private async Task ExecuteWithProviderAsync(Workflow workflow, WorkflowNode node, IReadOnlyList<WorkflowNode> nodes, IReadOnlyList<Dependency> dependencies, IAgentProvider selectedProvider, CancellationToken cancellationToken, int attempt)
     {
+        var governedPrivilegedNode = node.TaskType == "implementation-preparation" && node.Risk is RiskLevel.Medium or RiskLevel.High;
         var execution = new AgentExecution(node.Id, selectedProvider.Name, attempt, timeProvider.GetUtcNow());
         db.AgentExecutions.Add(execution);
         var predecessorNodeIds = dependencies.Where(item => item.SuccessorNodeId == node.Id).Select(item => item.PredecessorNodeId).ToArray();
         var upstreamArtifacts = await GetEffectiveUpstreamArtifactsAsync(workflow.Id, predecessorNodeIds, cancellationToken);
         var upstreamReferences = upstreamArtifacts.Select(artifact => artifact.ContentReference).ToList();
-        var response = await selectedProvider.ExecuteAsync(new AgentExecutionRequest(workflow.Id, node.Id, node.TaskType, TaskInstructions[node.TaskType], upstreamReferences, attempt, await GetEffectiveRequirementAsync(workflow.Id, cancellationToken)), cancellationToken);
+        var response = await selectedProvider.ExecuteAsync(new AgentExecutionRequest(workflow.Id, node.Id, node.TaskType, TaskInstructions[node.TaskType], upstreamReferences, attempt, await GetEffectiveRequirementAsync(workflow.Id, cancellationToken), governedPrivilegedNode ? AgentExecutionMode.Proposal : AgentExecutionMode.Apply), cancellationToken);
         execution.Complete(response.Succeeded ? AgentExecutionStatus.Succeeded : AgentExecutionStatus.Failed, timeProvider.GetUtcNow(), response.Output);
         AddEvent(workflow.Id, response.Succeeded ? "ProviderExecutionCompleted" : "ProviderExecutionFailed", $"{node.Name}:{selectedProvider.Name}", timeProvider.GetUtcNow());
         if (!response.Succeeded)
@@ -506,6 +567,11 @@ public sealed class OrchestrationService(
             node.TransitionTo(WorkflowNodeState.Failed);
             TransitionWorkflow(workflow, WorkflowState.SafeStopped, "SafeStopped", $"fallback:{node.Name}:{response.FailureClassification}");
             AddEvent(workflow.Id, "HumanEscalationRequired", $"{node.Name}:providers={provider.Name},{selectedProvider.Name}", timeProvider.GetUtcNow());
+            return;
+        }
+        if (governedPrivilegedNode)
+        {
+            await HandlePrivilegedProposalAsync(workflow, node, execution, selectedProvider, response, upstreamArtifacts, cancellationToken);
             return;
         }
         node.TransitionTo(WorkflowNodeState.Validating);
@@ -528,10 +594,148 @@ public sealed class OrchestrationService(
         AddEvent(workflow.Id, "NodeSucceeded", node.Name, timeProvider.GetUtcNow());
     }
 
+    private async Task HandlePrivilegedProposalAsync(Workflow workflow, WorkflowNode node, AgentExecution proposalExecution, IAgentProvider proposalProvider, AgenticSoftwareEngineering.Api.Providers.AgentExecutionResponse response, IReadOnlyList<EngineeringArtifact> upstreamArtifacts, CancellationToken cancellationToken)
+    {
+        var proposedOperation = response.ProposedOperation;
+        if (proposedOperation is null || string.IsNullOrWhiteSpace(proposedOperation.OperationContent) || string.IsNullOrWhiteSpace(proposedOperation.Summary) || string.IsNullOrWhiteSpace(proposedOperation.Scope))
+        {
+            node.TransitionTo(WorkflowNodeState.Failed);
+            TransitionWorkflow(workflow, WorkflowState.SafeStopped, "SafeStopped", "Malformed privileged ChangeSet proposal");
+            AddEvent(workflow.Id, "HumanEscalationRequired", $"{node.Name}:malformed-change-set", timeProvider.GetUtcNow());
+            return;
+        }
+
+        var activePlan = await GetActivePlanRevisionAsync(workflow.Id, cancellationToken)
+            ?? throw new InvalidOperationException("The workflow has no active plan revision.");
+        var proposal = new ActionProposal(workflow.Id, node.Id, activePlan.Id, node.Name, node.Risk, proposalProvider.Name, proposalExecution.Id, timeProvider.GetUtcNow());
+        var changeSet = new ChangeSet(workflow.Id, node.Id, activePlan.Id, proposal.Id, proposalProvider.Name, proposalExecution.Id, node.Risk, PrivilegedOperationType.ImplementationPreparation, proposedOperation.OperationContent, proposedOperation.Summary, proposedOperation.Scope, timeProvider.GetUtcNow());
+        proposal.AttachChangeSet(changeSet.Id);
+        db.ActionProposals.Add(proposal);
+        db.ChangeSets.Add(changeSet);
+        AddEvent(workflow.Id, "ActionProposalCreated", $"proposal={proposal.Id};change-set={changeSet.Id};fingerprint={changeSet.Fingerprint}", timeProvider.GetUtcNow());
+
+        if (node.Risk == RiskLevel.High)
+        {
+            db.PolicyEvaluations.Add(new PolicyEvaluation(workflow.Id, node.Id, "gate3-risk-policy", node.Risk, false, $"Exact ChangeSet {changeSet.Id} requires human approval.", timeProvider.GetUtcNow()));
+            var approval = new Approval(workflow.Id, node.Id, activePlan.Id, node.Name, node.Risk, "human-reviewer", timeProvider.GetUtcNow());
+            approval.BindToChangeSet(changeSet);
+            db.Approvals.Add(approval);
+            node.TransitionTo(WorkflowNodeState.WaitingForApproval);
+            TransitionWorkflow(workflow, WorkflowState.WaitingForApproval, "ApprovalRequested", $"{node.Name}:change-set={changeSet.Id};fingerprint={changeSet.Fingerprint}");
+            return;
+        }
+
+        var policyAuthorization = new ChangeSetAuthorization(workflow.Id, node.Id, activePlan.Id, proposal.Id, changeSet.Id, changeSet.Fingerprint, ChangeSetAuthorizationMechanism.PolicyAuthorized, null, timeProvider.GetUtcNow());
+        db.PolicyEvaluations.Add(new PolicyEvaluation(workflow.Id, node.Id, "gate3-risk-policy", node.Risk, true, $"Policy permits exact ChangeSet {changeSet.Id} for bounded medium-risk implementation preparation.", timeProvider.GetUtcNow()));
+        proposal.AuthorizeByPolicy(changeSet, policyAuthorization, timeProvider.GetUtcNow());
+        db.ChangeSetAuthorizations.Add(policyAuthorization);
+        AddEvent(workflow.Id, "ChangeSetPolicyAuthorized", $"change-set={changeSet.Id};fingerprint={changeSet.Fingerprint}", timeProvider.GetUtcNow());
+        await db.SaveChangesAsync(cancellationToken);
+        await ExecuteAuthorizedPrivilegedNodeAsync(workflow, node, proposal, changeSet, proposalProvider, await db.WorkflowNodes.Where(item => item.WorkflowId == workflow.Id).ToListAsync(cancellationToken), await GetDependenciesAsync(await db.WorkflowNodes.Where(item => item.WorkflowId == workflow.Id).ToListAsync(cancellationToken), cancellationToken), cancellationToken);
+    }
+
+    private async Task ExecuteAuthorizedPrivilegedNodeAsync(Workflow workflow, WorkflowNode node, ActionProposal proposal, ChangeSet changeSet, IAgentProvider executionProvider, IReadOnlyList<WorkflowNode> nodes, IReadOnlyList<Dependency> dependencies, CancellationToken cancellationToken)
+    {
+        var activePlan = await GetActivePlanRevisionAsync(workflow.Id, cancellationToken)
+            ?? throw new InvalidOperationException("The workflow has no active plan revision.");
+        ValidatePrivilegedChangeSet(workflow, node, activePlan, proposal, changeSet, changeSet.Fingerprint);
+        var persistedAuthorization = await db.ChangeSetAuthorizations
+            .SingleOrDefaultAsync(item => item.ChangeSetId == changeSet.Id && item.ActionProposalId == proposal.Id, cancellationToken);
+        if (persistedAuthorization is null)
+        {
+            node.TransitionTo(WorkflowNodeState.Blocked);
+            TransitionWorkflow(workflow, WorkflowState.SafeStopped, "SafeStopped", $"missing-persisted-change-set-authorization:{changeSet.Id}");
+            AddEvent(workflow.Id, "HumanEscalationRequired", $"{node.Name}:missing-persisted-change-set-authorization", timeProvider.GetUtcNow());
+            return;
+        }
+
+        if (proposal.State != ActionProposalState.Authorized)
+        {
+            throw new InvalidOperationException($"Proposal '{proposal.Id}' is not in the Authorized state.");
+        }
+
+        ValidatePersistedAuthorization(workflow, node, activePlan, proposal, changeSet, persistedAuthorization, cancellationToken);
+        AddEvent(workflow.Id, "NodeExecutionStarted", node.Name, timeProvider.GetUtcNow());
+        var attempt = await db.AgentExecutions.CountAsync(item => item.WorkflowNodeId == node.Id, cancellationToken) + 1;
+        var execution = new AgentExecution(node.Id, executionProvider.Name, attempt, timeProvider.GetUtcNow());
+        db.AgentExecutions.Add(execution);
+        var predecessorNodeIds = dependencies.Where(item => item.SuccessorNodeId == node.Id).Select(item => item.PredecessorNodeId).ToArray();
+        var upstreamArtifacts = await GetEffectiveUpstreamArtifactsAsync(workflow.Id, predecessorNodeIds, cancellationToken);
+        var response = await executionProvider.ExecuteAsync(new AgentExecutionRequest(workflow.Id, node.Id, node.TaskType, TaskInstructions[node.TaskType], upstreamArtifacts.Select(item => item.ContentReference).ToList(), attempt, await GetEffectiveRequirementAsync(workflow.Id, cancellationToken), AgentExecutionMode.Apply, changeSet.Id, changeSet.Fingerprint), cancellationToken);
+        execution.Complete(response.Succeeded ? AgentExecutionStatus.Succeeded : AgentExecutionStatus.Failed, timeProvider.GetUtcNow(), response.Output);
+        if (!response.Succeeded)
+        {
+            node.TransitionTo(WorkflowNodeState.Failed);
+            TransitionWorkflow(workflow, WorkflowState.SafeStopped, "SafeStopped", $"privileged-apply:{node.Name}:{response.FailureClassification}");
+            AddEvent(workflow.Id, "HumanEscalationRequired", $"{node.Name}:privileged-apply-failed", timeProvider.GetUtcNow());
+            return;
+        }
+
+        if (!HasStructurallyValidOutput(response))
+        {
+            node.TransitionTo(WorkflowNodeState.Failed);
+            TransitionWorkflow(workflow, WorkflowState.SafeStopped, "SafeStopped", $"privileged-apply-exit-gate:{node.Name}");
+            AddEvent(workflow.Id, "HumanEscalationRequired", $"{node.Name}:privileged-apply-exit-gate", timeProvider.GetUtcNow());
+            return;
+        }
+
+        proposal.MarkApplied(changeSet, execution.Id, activePlan.Id, timeProvider.GetUtcNow());
+        var previousArtifact = await GetLatestArtifactAsync(workflow.Id, response.ArtifactType, cancellationToken);
+        var artifact = EngineeringArtifact.Create(workflow.Id, response.ArtifactType, previousArtifact is null ? 1 : previousArtifact.Version + 1, response.ContentReference, response.ContentHash, node.Id, execution.Id, previousArtifact?.Id, timeProvider.GetUtcNow());
+        artifact.SetValidationStatus(ArtifactValidationStatus.Valid);
+        db.EngineeringArtifacts.Add(artifact);
+        await AddArtifactDependenciesAsync(workflow.Id, artifact, upstreamArtifacts, cancellationToken);
+        db.ValidationResults.Add(new ValidationResult(workflow.Id, $"{node.TaskType}-validation", true, "Authorized privileged execution passed.", timeProvider.GetUtcNow()));
+        node.TransitionTo(WorkflowNodeState.Validating);
+        node.TransitionTo(WorkflowNodeState.Succeeded);
+        AddEvent(workflow.Id, "ChangeSetApplied", $"proposal={proposal.Id};change-set={changeSet.Id};execution={execution.Id}", timeProvider.GetUtcNow());
+        AddEvent(workflow.Id, "NodeSucceeded", node.Name, timeProvider.GetUtcNow());
+    }
+
+    private void ValidatePersistedAuthorization(Workflow workflow, WorkflowNode node, PlanRevision activePlan, ActionProposal proposal, ChangeSet changeSet, ChangeSetAuthorization authorization, CancellationToken cancellationToken)
+    {
+        if (authorization.WorkflowId != workflow.Id || authorization.WorkflowNodeId != node.Id || authorization.PlanRevisionId != activePlan.Id || authorization.ActionProposalId != proposal.Id || authorization.ChangeSetId != changeSet.Id || authorization.ChangeSetFingerprint != changeSet.Fingerprint || !changeSet.HasValidFingerprint())
+        {
+            throw new InvalidOperationException("Persisted ChangeSet authorization does not match the current execution scope.");
+        }
+
+        if (authorization.Mechanism == ChangeSetAuthorizationMechanism.HumanApproved)
+        {
+            if (authorization.ApprovalId is not Guid approvalId)
+            {
+                throw new InvalidOperationException("Human ChangeSet authorization requires an approval.");
+            }
+
+            var approval = db.Approvals.SingleOrDefault(item => item.Id == approvalId);
+            if (approval is null || approval.Decision != ApprovalDecision.Approved || approval.WorkflowId != workflow.Id || approval.WorkflowNodeId != node.Id || approval.PlanRevisionId != activePlan.Id || approval.ActionProposalId != proposal.Id || approval.ChangeSetId != changeSet.Id || approval.ChangeSetFingerprint != changeSet.Fingerprint)
+            {
+                throw new InvalidOperationException("Persisted human approval does not match the current ChangeSet.");
+            }
+        }
+        else if (authorization.Mechanism != ChangeSetAuthorizationMechanism.PolicyAuthorized || authorization.ApprovalId is not null || node.Risk == RiskLevel.High || !db.PolicyEvaluations.Any(item => item.WorkflowNodeId == node.Id && item.PolicyName == "gate3-risk-policy" && item.Allowed))
+        {
+            throw new InvalidOperationException("Persisted policy authorization is invalid for the current ChangeSet.");
+        }
+    }
+
+    private void ValidatePrivilegedChangeSet(Workflow workflow, WorkflowNode node, PlanRevision activePlan, ActionProposal proposal, ChangeSet changeSet, string? expectedFingerprint)
+    {
+        if (workflow.Id != proposal.WorkflowId || workflow.Id != changeSet.WorkflowId || node.Id != proposal.WorkflowNodeId || node.Id != changeSet.WorkflowNodeId || activePlan.Id != proposal.PlanRevisionId || activePlan.Id != changeSet.PlanRevisionId || proposal.Id != changeSet.ActionProposalId || proposal.ChangeSetId != changeSet.Id || proposal.Risk != node.Risk || changeSet.Risk != node.Risk || proposal.ProviderName != changeSet.ProviderName || proposal.ProposalExecutionId != changeSet.ProposalExecutionId || changeSet.OperationType != PrivilegedOperationType.ImplementationPreparation || !changeSet.HasValidFingerprint() || !string.Equals(expectedFingerprint, changeSet.Fingerprint, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException("Privileged ChangeSet structural validation failed.");
+        }
+    }
+
     private IAgentProvider? GetCompatibleFallbackProvider()
     {
         var providers = registeredProviders?.ToList() ?? new List<IAgentProvider> { provider };
         return providers.FirstOrDefault(candidate => !ReferenceEquals(candidate, provider) && provider.CompatibleFallbackProviders.Contains(candidate.Name));
+    }
+
+    private IAgentProvider? GetRegisteredProvider(string name)
+    {
+        var providers = registeredProviders?.ToList() ?? new List<IAgentProvider> { provider };
+        return providers.FirstOrDefault(candidate => string.Equals(candidate.Name, name, StringComparison.OrdinalIgnoreCase));
     }
 
     private string GetFallbackDenialReason(IAgentProvider? fallback) =>
