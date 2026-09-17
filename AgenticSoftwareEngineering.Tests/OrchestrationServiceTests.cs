@@ -100,7 +100,7 @@ public sealed class OrchestrationServiceTests : IDisposable
             status = await failingService.AdvanceAsync(status.WorkflowId, CancellationToken.None);
         }
 
-        Assert.Equal(WorkflowState.Failed, status.State);
+        Assert.Equal(WorkflowState.SafeStopped, status.State);
         Assert.DoesNotContain(status.Validations, validation => validation.ValidationName == "validation" && validation.Passed);
         Assert.DoesNotContain(status.Events, eventItem => eventItem.EventType == "WorkflowCompleted");
     }
@@ -190,7 +190,7 @@ public sealed class OrchestrationServiceTests : IDisposable
         var architecture = failed.Nodes.Single(node => node.TaskType == "architecture-design");
         var implementation = failed.Nodes.Single(node => node.TaskType == "implementation-preparation");
 
-        Assert.Equal(WorkflowState.Failed, failed.State);
+        Assert.Equal(WorkflowState.SafeStopped, failed.State);
         Assert.Equal(WorkflowNodeState.Failed, architecture.State);
         Assert.Equal(WorkflowNodeState.Ready, implementation.State);
         Assert.Equal(1, failed.Executions.Count(execution => execution.WorkflowNodeId == architecture.Id));

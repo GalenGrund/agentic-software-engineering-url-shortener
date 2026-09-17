@@ -95,6 +95,49 @@ public sealed class ApiIntegrationTests : IClassFixture<ApiFactory>
         }
     }
 
+    [Fact]
+    public async Task Gate3ApprovalApiCanRejectHighRiskWorkflow()
+    {
+        using var create = await client.PostAsJsonAsync("/api/workflows/greenfield", new { requirement = "Create a short URL", requiresHighRiskApproval = true });
+        using var created = JsonDocument.Parse(await create.Content.ReadAsStringAsync());
+        var workflowId = created.RootElement.GetProperty("workflowId").GetGuid();
+        await client.PostAsync($"/api/workflows/{workflowId}/advance", null);
+        await client.PostAsync($"/api/workflows/{workflowId}/advance", null);
+        var waiting = await client.PostAsync($"/api/workflows/{workflowId}/advance", null);
+        using var waitingJson = JsonDocument.Parse(await waiting.Content.ReadAsStringAsync());
+        var approvalId = waitingJson.RootElement.GetProperty("approvals").EnumerateArray().Single().GetProperty("id").GetGuid();
+
+        var decision = await client.PostAsJsonAsync($"/api/workflows/{workflowId}/approvals/{approvalId}/decision", new { approved = false, rationale = "Rejected for review" });
+        using var rejected = JsonDocument.Parse(await decision.Content.ReadAsStringAsync());
+
+        Assert.Equal("SafeStopped", rejected.RootElement.GetProperty("state").GetString());
+        Assert.Contains(rejected.RootElement.GetProperty("events").EnumerateArray(), item => item.GetProperty("eventType").GetString() == "HumanEscalationRequired");
+    }
+
+    [Fact]
+    public async Task Gate3ApprovalApiAuthorizesHighRiskExecutionWithPlanRevisionEvidence()
+    {
+        using var create = await client.PostAsJsonAsync("/api/workflows/greenfield", new { requirement = "Create a short URL", requiresHighRiskApproval = true });
+        using var created = JsonDocument.Parse(await create.Content.ReadAsStringAsync());
+        var workflowId = created.RootElement.GetProperty("workflowId").GetGuid();
+        await client.PostAsync($"/api/workflows/{workflowId}/advance", null);
+        await client.PostAsync($"/api/workflows/{workflowId}/advance", null);
+        using var waiting = JsonDocument.Parse(await (await client.PostAsync($"/api/workflows/{workflowId}/advance", null)).Content.ReadAsStringAsync());
+        var approval = waiting.RootElement.GetProperty("approvals").EnumerateArray().Single();
+        var planRevisionId = approval.GetProperty("planRevisionId").GetGuid();
+        var approvalId = approval.GetProperty("id").GetGuid();
+
+        using var decision = JsonDocument.Parse(await (await client.PostAsJsonAsync($"/api/workflows/{workflowId}/approvals/{approvalId}/decision", new { approved = true, rationale = "Approved for controlled integration test" })).Content.ReadAsStringAsync());
+
+        Assert.Equal(planRevisionId, decision.RootElement.GetProperty("approvals").EnumerateArray().Single().GetProperty("planRevisionId").GetGuid());
+        Assert.Contains(decision.RootElement.GetProperty("policies").EnumerateArray(), policy =>
+            policy.GetProperty("policyName").GetString() == "gate3-post-approval-authorization" && policy.GetProperty("allowed").GetBoolean());
+        var events = decision.RootElement.GetProperty("events").EnumerateArray().ToList();
+        var authorizationIndex = events.FindIndex(item => item.GetProperty("eventType").GetString() == "PostApprovalAuthorizationAllowed");
+        var executionIndex = events.FindIndex(item => item.GetProperty("eventType").GetString() == "NodeExecutionStarted" && item.GetProperty("details").GetString() == "Implementation Preparation");
+        Assert.True(authorizationIndex >= 0 && authorizationIndex < executionIndex);
+    }
+
     private sealed record ApiError(string Code, string Message);
 }
 

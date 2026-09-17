@@ -2,14 +2,19 @@ using AgenticSoftwareEngineering.Api.Domain.Orchestration;
 using AgenticSoftwareEngineering.Api.Infrastructure.Persistence;
 using AgenticSoftwareEngineering.Api.Providers;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 
 namespace AgenticSoftwareEngineering.Api.Application.Orchestration;
 
 public sealed class OrchestrationService(
     AppDbContext db,
     IAgentProvider provider,
-    TimeProvider timeProvider) : IOrchestrationService
+    TimeProvider timeProvider,
+    IEnumerable<IAgentProvider>? registeredProviders = null,
+    IOptions<OrchestrationOptions>? orchestrationOptions = null) : IOrchestrationService
 {
+    private int MaxTotalExecutionAttempts => Math.Max(1, orchestrationOptions?.Value.MaxTotalExecutionAttempts ?? 2);
+    private bool AllowFallback => orchestrationOptions?.Value.AllowFallback ?? true;
     private static readonly IReadOnlySet<string> RequiredArtifactTypes = new HashSet<string>(StringComparer.Ordinal)
     {
         "normalized-requirement",
@@ -29,7 +34,7 @@ public sealed class OrchestrationService(
         ["release-readiness"] = "Evaluate release readiness from required workflow evidence."
     };
 
-    public async Task<WorkflowStatusResponse> CreateGreenfieldAsync(string requirement, CancellationToken cancellationToken)
+    public async Task<WorkflowStatusResponse> CreateGreenfieldAsync(string requirement, CancellationToken cancellationToken, bool requiresHighRiskApproval = false)
     {
         if (string.IsNullOrWhiteSpace(requirement))
         {
@@ -40,7 +45,7 @@ public sealed class OrchestrationService(
         var workflow = new Workflow("greenfield-url-shortener", now);
         workflow.TransitionTo(WorkflowState.Planning);
         var plan = new PlanRevision(workflow.Id, 1, now);
-        var nodes = CreateNodes(workflow.Id, now);
+        var nodes = CreateNodes(workflow.Id, now, requiresHighRiskApproval);
         var dependencies = CreateDependencies(nodes);
 
         db.Workflows.Add(workflow);
@@ -55,6 +60,46 @@ public sealed class OrchestrationService(
         AddEvent(workflow.Id, "NodeReady", initialReady.Name, now);
         await db.SaveChangesAsync(cancellationToken);
         return await GetStatusAsync(workflow.Id, cancellationToken);
+    }
+
+    public async Task<WorkflowStatusResponse> DecideApprovalAsync(Guid workflowId, Guid approvalId, ApprovalDecisionRequest request, CancellationToken cancellationToken)
+    {
+        var workflow = await db.Workflows.SingleOrDefaultAsync(item => item.Id == workflowId, cancellationToken)
+            ?? throw new KeyNotFoundException($"Workflow '{workflowId}' was not found.");
+        var approval = await db.Approvals.SingleOrDefaultAsync(item => item.Id == approvalId && item.WorkflowId == workflowId, cancellationToken)
+            ?? throw new KeyNotFoundException($"Approval '{approvalId}' was not found.");
+        var node = await db.WorkflowNodes.SingleAsync(item => item.Id == approval.WorkflowNodeId, cancellationToken);
+        var activePlan = await GetActivePlanRevisionAsync(workflowId, cancellationToken)
+            ?? throw new InvalidOperationException("The workflow has no active plan revision.");
+        if (approval.WorkflowNodeId != node.Id || node.WorkflowId != workflowId || approval.PlanRevisionId != activePlan.Id)
+        {
+            db.PolicyEvaluations.Add(new PolicyEvaluation(workflowId, node.Id, "gate3-post-approval-authorization", node.Risk, false, "Approval does not belong to the active workflow plan revision.", timeProvider.GetUtcNow()));
+            AddEvent(workflowId, "PostApprovalAuthorizationDenied", node.Name, timeProvider.GetUtcNow());
+            await db.SaveChangesAsync(cancellationToken);
+            throw new InvalidOperationException("Approval is not valid for the active workflow plan revision.");
+        }
+        var decision = request.Approved ? ApprovalDecision.Approved : ApprovalDecision.Rejected;
+        approval.Decide(decision, request.Rationale, timeProvider.GetUtcNow());
+        AddEvent(workflowId, request.Approved ? "ApprovalApproved" : "ApprovalRejected", node.Name, timeProvider.GetUtcNow());
+        if (request.Approved)
+        {
+            db.PolicyEvaluations.Add(new PolicyEvaluation(workflowId, node.Id, "gate3-post-approval-authorization", node.Risk, true, $"Approved by approval {approval.Id} for plan revision {activePlan.Id}.", timeProvider.GetUtcNow()));
+            AddEvent(workflowId, "PostApprovalAuthorizationAllowed", $"{node.Name}:plan-revision={activePlan.Id}", timeProvider.GetUtcNow());
+            node.TransitionTo(WorkflowNodeState.Executing);
+            TransitionWorkflow(workflow, WorkflowState.Executing, "WorkflowStateChanged", "WaitingForApproval -> Executing");
+            await db.SaveChangesAsync(cancellationToken);
+            var dependencies = await db.Dependencies.Where(item => item.SuccessorNodeId == node.Id).ToListAsync(cancellationToken);
+            var nodes = await db.WorkflowNodes.Where(item => item.WorkflowId == workflowId).ToListAsync(cancellationToken);
+            await ExecuteNodeAsync(workflow, node, nodes, dependencies, cancellationToken, alreadyExecuting: true);
+        }
+        else
+        {
+            node.TransitionTo(WorkflowNodeState.Blocked);
+            TransitionWorkflow(workflow, WorkflowState.SafeStopped, "SafeStopped", "High-risk approval rejected");
+            AddEvent(workflowId, "HumanEscalationRequired", "Approval rejected; authorized recovery is required.", timeProvider.GetUtcNow());
+        }
+        await db.SaveChangesAsync(cancellationToken);
+        return await GetStatusAsync(workflowId, cancellationToken);
     }
 
     public async Task<WorkflowStatusResponse> AdvanceAsync(Guid workflowId, CancellationToken cancellationToken)
@@ -94,7 +139,7 @@ public sealed class OrchestrationService(
             }
         }
 
-        RefreshReadyNodes(workflowId, nodes, dependencies);
+        RefreshReadyNodes(workflowId, nodes, dependencies, includeRetryScheduled: false);
         await db.SaveChangesAsync(cancellationToken);
         return await GetStatusAsync(workflowId, cancellationToken);
     }
@@ -109,6 +154,8 @@ public sealed class OrchestrationService(
         var executions = (await db.AgentExecutions.AsNoTracking().Where(item => nodeIds.Contains(item.WorkflowNodeId)).ToListAsync(cancellationToken)).OrderBy(item => item.StartedAtUtc).ToList();
         var artifacts = (await db.EngineeringArtifacts.AsNoTracking().Where(item => item.WorkflowId == workflowId).ToListAsync(cancellationToken)).OrderBy(item => item.Version).ToList();
         var validations = (await db.ValidationResults.AsNoTracking().Where(item => item.WorkflowId == workflowId).ToListAsync(cancellationToken)).OrderBy(item => item.ValidatedAtUtc).ToList();
+        var policies = await db.PolicyEvaluations.AsNoTracking().Where(item => item.WorkflowId == workflowId).ToListAsync(cancellationToken);
+        var approvals = await db.Approvals.AsNoTracking().Where(item => item.WorkflowId == workflowId).ToListAsync(cancellationToken);
         var events = (await db.WorkflowEvents.AsNoTracking().Where(item => item.WorkflowId == workflowId).ToListAsync(cancellationToken)).OrderBy(item => item.OccurredAtUtc).ToList();
 
         return new WorkflowStatusResponse(
@@ -120,15 +167,26 @@ public sealed class OrchestrationService(
             executions.Select(item => new AgenticSoftwareEngineering.Api.Application.Orchestration.AgentExecutionResponse(item.Id, item.WorkflowNodeId, item.ProviderName, item.Attempt, item.Status, item.StartedAtUtc, item.CompletedAtUtc)).ToList(),
             artifacts.Select(item => new ArtifactStatusResponse(item.Id, item.ArtifactType, item.Version, item.ContentReference, item.ContentHash, item.ProducerNodeId, item.ProducerExecutionId, item.ValidationStatus)).ToList(),
             validations.Select(item => new ValidationStatusResponse(item.Id, item.ValidationName, item.Passed, item.Details, item.ValidatedAtUtc)).ToList(),
+            policies.Select(item => new PolicyStatusResponse(item.Id, item.WorkflowNodeId, item.PolicyName, item.Risk, item.Allowed, item.Reason, item.EvaluatedAtUtc)).ToList(),
+            approvals.Select(item => new ApprovalStatusResponse(item.Id, item.WorkflowNodeId, item.PlanRevisionId, item.Action, item.Risk, item.Decision, item.ApproverRole, item.Rationale, item.RequestedAtUtc, item.DecidedAtUtc)).ToList(),
             events.Select(item => new EventStatusResponse(item.Id, item.EventType, item.Details, item.OccurredAtUtc)).ToList());
     }
 
-    private async Task ExecuteNodeAsync(Workflow workflow, WorkflowNode node, IReadOnlyList<WorkflowNode> nodes, IReadOnlyList<Dependency> dependencies, CancellationToken cancellationToken)
+    private async Task ExecuteNodeAsync(Workflow workflow, WorkflowNode node, IReadOnlyList<WorkflowNode> nodes, IReadOnlyList<Dependency> dependencies, CancellationToken cancellationToken, bool alreadyExecuting = false)
     {
-        node.TransitionTo(WorkflowNodeState.Executing);
+        if (!alreadyExecuting)
+        {
+            await ApplyPolicyGateAsync(workflow, node, cancellationToken);
+            if (workflow.State != WorkflowState.Executing)
+            {
+                return;
+            }
+            node.TransitionTo(WorkflowNodeState.Executing);
+        }
         AddEvent(workflow.Id, "NodeExecutionStarted", node.Name, timeProvider.GetUtcNow());
         var startedAt = timeProvider.GetUtcNow();
-        var execution = new AgentExecution(node.Id, provider.Name, 1, startedAt);
+        var attempt = await db.AgentExecutions.CountAsync(item => item.WorkflowNodeId == node.Id, cancellationToken) + 1;
+        var execution = new AgentExecution(node.Id, provider.Name, attempt, startedAt);
         db.AgentExecutions.Add(execution);
 
         var predecessorNodeIds = dependencies
@@ -146,8 +204,35 @@ public sealed class OrchestrationService(
 
         if (!response.Succeeded)
         {
+            if (response.FailureClassification == FailureClassification.Transient && attempt < MaxTotalExecutionAttempts)
+            {
+                node.TransitionTo(WorkflowNodeState.RetryScheduled);
+                AddEvent(workflow.Id, "RetryScheduled", $"{node.Name}:attempt={attempt}", timeProvider.GetUtcNow());
+                return;
+            }
+
+            if (response.FailureClassification == FailureClassification.PolicyBlocked)
+            {
+                node.TransitionTo(WorkflowNodeState.Failed);
+                TransitionWorkflow(workflow, WorkflowState.SafeStopped, "SafeStopped", $"{node.Name}:{response.FailureClassification}");
+                AddEvent(workflow.Id, "HumanEscalationRequired", $"{node.Name}:attempts={attempt};provider={provider.Name}", timeProvider.GetUtcNow());
+                return;
+            }
+
+            var fallback = GetCompatibleFallbackProvider();
+            var fallbackAllowed = AllowFallback && fallback is not null;
+            db.PolicyEvaluations.Add(new PolicyEvaluation(workflow.Id, node.Id, "gate3-fallback-policy", node.Risk, fallbackAllowed, fallbackAllowed ? $"Registered compatible fallback '{fallback!.Name}' is permitted." : GetFallbackDenialReason(fallback), timeProvider.GetUtcNow()));
+            AddEvent(workflow.Id, "FallbackPolicyEvaluated", $"{node.Name}:allowed={fallbackAllowed}", timeProvider.GetUtcNow());
+            if (fallbackAllowed)
+            {
+                AddEvent(workflow.Id, "FallbackSelected", $"{node.Name}:{provider.Name}->{fallback!.Name}", timeProvider.GetUtcNow());
+                await ExecuteWithProviderAsync(workflow, node, nodes, dependencies, fallback, cancellationToken, attempt + 1);
+                return;
+            }
+
             node.TransitionTo(WorkflowNodeState.Failed);
-            TransitionWorkflow(workflow, WorkflowState.Failed, "NodeFailed", node.Name);
+            TransitionWorkflow(workflow, WorkflowState.SafeStopped, "SafeStopped", $"{node.Name}:{response.FailureClassification}");
+            AddEvent(workflow.Id, "HumanEscalationRequired", $"{node.Name}:attempts={attempt};provider={provider.Name}", timeProvider.GetUtcNow());
             return;
         }
 
@@ -221,6 +306,69 @@ public sealed class OrchestrationService(
         AddEvent(workflow.Id, "NodeSucceeded", node.Name, timeProvider.GetUtcNow());
     }
 
+    private async Task ExecuteWithProviderAsync(Workflow workflow, WorkflowNode node, IReadOnlyList<WorkflowNode> nodes, IReadOnlyList<Dependency> dependencies, IAgentProvider selectedProvider, CancellationToken cancellationToken, int attempt)
+    {
+        var execution = new AgentExecution(node.Id, selectedProvider.Name, attempt, timeProvider.GetUtcNow());
+        db.AgentExecutions.Add(execution);
+        var predecessorNodeIds = dependencies.Where(item => item.SuccessorNodeId == node.Id).Select(item => item.PredecessorNodeId).ToArray();
+        var upstreamReferences = await db.EngineeringArtifacts.Where(item => item.WorkflowId == workflow.Id && item.ProducerNodeId.HasValue && predecessorNodeIds.Contains(item.ProducerNodeId.Value)).Select(item => item.ContentReference).ToListAsync(cancellationToken);
+        var response = await selectedProvider.ExecuteAsync(new AgentExecutionRequest(workflow.Id, node.Id, node.TaskType, TaskInstructions[node.TaskType], upstreamReferences, attempt), cancellationToken);
+        execution.Complete(response.Succeeded ? AgentExecutionStatus.Succeeded : AgentExecutionStatus.Failed, timeProvider.GetUtcNow(), response.Output);
+        AddEvent(workflow.Id, response.Succeeded ? "ProviderExecutionCompleted" : "ProviderExecutionFailed", $"{node.Name}:{selectedProvider.Name}", timeProvider.GetUtcNow());
+        if (!response.Succeeded)
+        {
+            node.TransitionTo(WorkflowNodeState.Failed);
+            TransitionWorkflow(workflow, WorkflowState.SafeStopped, "SafeStopped", $"fallback:{node.Name}:{response.FailureClassification}");
+            AddEvent(workflow.Id, "HumanEscalationRequired", $"{node.Name}:providers={provider.Name},{selectedProvider.Name}", timeProvider.GetUtcNow());
+            return;
+        }
+        node.TransitionTo(WorkflowNodeState.Validating);
+        var valid = HasStructurallyValidOutput(response);
+        var validation = new ValidationResult(workflow.Id, $"{node.TaskType}-fallback-exit-gate", valid, valid ? "Fallback output passed." : "Fallback output failed.", timeProvider.GetUtcNow());
+        db.ValidationResults.Add(validation);
+        if (!valid)
+        {
+            node.TransitionTo(WorkflowNodeState.Failed);
+            TransitionWorkflow(workflow, WorkflowState.SafeStopped, "SafeStopped", $"fallback-exit-gate:{node.Name}");
+            AddEvent(workflow.Id, "HumanEscalationRequired", $"{node.Name}:fallback-exit-gate", timeProvider.GetUtcNow());
+            return;
+        }
+        var artifact = EngineeringArtifact.Create(workflow.Id, response.ArtifactType, await NextArtifactVersionAsync(workflow.Id, response.ArtifactType, cancellationToken), response.ContentReference, response.ContentHash, node.Id, execution.Id, null, timeProvider.GetUtcNow());
+        artifact.SetValidationStatus(ArtifactValidationStatus.Valid);
+        db.EngineeringArtifacts.Add(artifact);
+        node.TransitionTo(WorkflowNodeState.Succeeded);
+        AddEvent(workflow.Id, "NodeSucceeded", node.Name, timeProvider.GetUtcNow());
+    }
+
+    private IAgentProvider? GetCompatibleFallbackProvider()
+    {
+        var providers = registeredProviders?.ToList() ?? new List<IAgentProvider> { provider };
+        return providers.FirstOrDefault(candidate => !ReferenceEquals(candidate, provider) && provider.CompatibleFallbackProviders.Contains(candidate.Name));
+    }
+
+    private string GetFallbackDenialReason(IAgentProvider? fallback) =>
+        !AllowFallback ? "Fallback policy is disabled by orchestration configuration." : fallback is null ? "No registered compatible fallback provider is available." : "Fallback policy denied execution.";
+
+    private async Task ApplyPolicyGateAsync(Workflow workflow, WorkflowNode node, CancellationToken cancellationToken)
+    {
+        var allowed = node.Risk != RiskLevel.High;
+        var policy = new PolicyEvaluation(workflow.Id, node.Id, "gate3-risk-policy", node.Risk, allowed, allowed ? "Risk permitted." : "High-risk action requires approval.", timeProvider.GetUtcNow());
+        db.PolicyEvaluations.Add(policy);
+        AddEvent(workflow.Id, "PolicyEvaluated", $"{node.Name}:{node.Risk}:allowed={allowed}", timeProvider.GetUtcNow());
+        if (allowed) return;
+        var approval = await db.Approvals.SingleOrDefaultAsync(item => item.WorkflowNodeId == node.Id && item.Decision == ApprovalDecision.Approved, cancellationToken);
+        if (approval is null)
+        {
+            var activePlan = await GetActivePlanRevisionAsync(workflow.Id, cancellationToken)
+                ?? throw new InvalidOperationException("The workflow has no active plan revision.");
+            var requested = new Approval(workflow.Id, node.Id, activePlan.Id, node.Name, node.Risk, "human-reviewer", timeProvider.GetUtcNow());
+            db.Approvals.Add(requested);
+            node.TransitionTo(WorkflowNodeState.Executing);
+            node.TransitionTo(WorkflowNodeState.WaitingForApproval);
+            TransitionWorkflow(workflow, WorkflowState.WaitingForApproval, "ApprovalRequested", node.Name);
+        }
+    }
+
     private static bool HasStructurallyValidOutput(AgenticSoftwareEngineering.Api.Providers.AgentExecutionResponse response) =>
         response.Succeeded &&
         !string.IsNullOrWhiteSpace(response.Output) &&
@@ -228,10 +376,10 @@ public sealed class OrchestrationService(
         !string.IsNullOrWhiteSpace(response.ContentReference) &&
         !string.IsNullOrWhiteSpace(response.ContentHash);
 
-    private bool RefreshReadyNodes(Guid workflowId, IReadOnlyList<WorkflowNode> nodes, IReadOnlyList<Dependency> dependencies)
+    private bool RefreshReadyNodes(Guid workflowId, IReadOnlyList<WorkflowNode> nodes, IReadOnlyList<Dependency> dependencies, bool includeRetryScheduled = true)
     {
         var changed = false;
-        foreach (var node in nodes.Where(item => item.State == WorkflowNodeState.Pending))
+        foreach (var node in nodes.Where(item => item.State == WorkflowNodeState.Pending || (includeRetryScheduled && item.State == WorkflowNodeState.RetryScheduled)))
         {
             var predecessors = dependencies.Where(dependency => dependency.SuccessorNodeId == node.Id).Select(dependency => nodes.Single(candidate => candidate.Id == dependency.PredecessorNodeId));
             if (predecessors.All(predecessor => predecessor.State == WorkflowNodeState.Succeeded))
@@ -257,13 +405,16 @@ public sealed class OrchestrationService(
     private Task<int> NextArtifactVersionAsync(Guid workflowId, string artifactType, CancellationToken cancellationToken) =>
         db.EngineeringArtifacts.Where(item => item.WorkflowId == workflowId && item.ArtifactType == artifactType).Select(item => (int?)item.Version).MaxAsync(cancellationToken).ContinueWith(task => (task.Result ?? 0) + 1, cancellationToken);
 
-    private static List<WorkflowNode> CreateNodes(Guid workflowId, DateTimeOffset now) =>
+    private Task<PlanRevision?> GetActivePlanRevisionAsync(Guid workflowId, CancellationToken cancellationToken) =>
+        db.PlanRevisions.Where(item => item.WorkflowId == workflowId).OrderByDescending(item => item.Revision).FirstOrDefaultAsync(cancellationToken);
+
+    private static List<WorkflowNode> CreateNodes(Guid workflowId, DateTimeOffset now, bool requiresHighRiskApproval) =>
         new()
         {
             new WorkflowNode(workflowId, "Normalize Requirement", "normalize-requirement", now),
             new WorkflowNode(workflowId, "Decompose / Plan", "decompose-plan", now),
             new WorkflowNode(workflowId, "Architecture / Design", "architecture-design", now),
-            new WorkflowNode(workflowId, "Implementation Preparation", "implementation-preparation", now),
+            new WorkflowNode(workflowId, "Implementation Preparation", "implementation-preparation", now, requiresHighRiskApproval ? RiskLevel.High : RiskLevel.Medium),
             new WorkflowNode(workflowId, "Validation", "validation", now),
             new WorkflowNode(workflowId, "Release Readiness", "release-readiness", now)
         };

@@ -100,8 +100,21 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             entity.Property(execution => execution.OutputSummary).HasMaxLength(2000);
         });
         modelBuilder.Entity<Decision>().ToTable("Orchestration_Decisions");
-        modelBuilder.Entity<Approval>().ToTable("Orchestration_Approvals");
-        modelBuilder.Entity<PolicyEvaluation>().ToTable("Orchestration_PolicyEvaluations");
+        modelBuilder.Entity<Approval>(entity =>
+        {
+            entity.ToTable("Orchestration_Approvals");
+            entity.HasKey(approval => approval.Id);
+            entity.Property(approval => approval.ApproverRole).HasMaxLength(100).IsRequired();
+            entity.Property(approval => approval.Rationale).HasMaxLength(2000);
+        });
+        modelBuilder.Entity<PolicyEvaluation>(entity =>
+        {
+            entity.ToTable("Orchestration_PolicyEvaluations");
+            entity.HasKey(evaluation => evaluation.Id);
+            entity.Property(evaluation => evaluation.PolicyName).HasMaxLength(100).IsRequired();
+            entity.Property(evaluation => evaluation.Reason).HasMaxLength(2000).IsRequired();
+            entity.Property(evaluation => evaluation.WorkflowNodeId).IsRequired();
+        });
         modelBuilder.Entity<ValidationResult>().ToTable("Orchestration_ValidationResults");
     }
 }

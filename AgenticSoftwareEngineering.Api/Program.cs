@@ -14,12 +14,14 @@ builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 builder.Services.AddDbContext<AppDbContext>(options =>
     options.UseSqlite(builder.Configuration.GetConnectionString("Default") ?? "Data Source=agentic-sdlc.db"));
+builder.Services.Configure<OrchestrationOptions>(builder.Configuration.GetSection("Orchestration"));
 builder.Services.AddScoped<IUrlShortenerService, UrlShortenerService>();
 builder.Services.AddScoped<IOrchestrationService, OrchestrationService>();
 builder.Services.AddSingleton<IUrlValidator, UrlValidator>();
 builder.Services.AddSingleton<IShortCodeGenerator, SecureShortCodeGenerator>();
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSingleton<IAgentProvider, DeterministicAgentProvider>();
+builder.Services.AddSingleton<IAgentProvider, DeterministicFallbackProvider>();
 
 var app = builder.Build();
 

@@ -11,7 +11,7 @@ public sealed class WorkflowNode
     {
     }
 
-    public WorkflowNode(Guid workflowId, string name, string taskType, DateTimeOffset createdAtUtc)
+    public WorkflowNode(Guid workflowId, string name, string taskType, DateTimeOffset createdAtUtc, RiskLevel risk = RiskLevel.Low)
     {
         if (workflowId == Guid.Empty)
         {
@@ -32,6 +32,7 @@ public sealed class WorkflowNode
         WorkflowId = workflowId;
         Name = name;
         TaskType = taskType;
+        Risk = risk;
         CreatedAtUtc = createdAtUtc;
         State = WorkflowNodeState.Pending;
     }
@@ -40,6 +41,7 @@ public sealed class WorkflowNode
     public Guid WorkflowId { get; private set; }
     public string Name { get; private set; } = string.Empty;
     public string TaskType { get; private set; } = string.Empty;
+    public RiskLevel Risk { get; private set; }
     public DateTimeOffset CreatedAtUtc { get; private set; }
     public WorkflowNodeState State { get; private set; }
     public Workflow? Workflow { get; private set; }

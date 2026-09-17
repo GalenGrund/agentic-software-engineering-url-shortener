@@ -23,7 +23,7 @@
 
 ## 4. Workflow Orchestration Core [MUST HAVE]
 
-- [ ] 4.1 Implement workflow, plan revision, node, dependency, policy evaluation, Approval, and event persistence models
+- [x] 4.1 Implement workflow, plan revision, node, dependency, policy evaluation, Approval, and event persistence models
 - [x] 4.2 Implement legal workflow and node state transitions with rejection of illegal transitions
 - [x] 4.3 Implement dependency-aware DAG scheduling with sequential and concurrent independent branches
 - [x] 4.4 Implement synchronization barriers that remain blocked until all required predecessor exit gates succeed
@@ -34,14 +34,14 @@
 - [x] 5.1 Define the common agent execution contract and provider compatibility declarations
 - [ ] 5.2 Implement the deterministic provider for repeatable testing, ambiguity handling, failure injection, and credential-free end-to-end execution
 - [ ] 5.3 Add structured ActionProposal and ChangeSet handling before privileged execution is allowed
-- [ ] 5.4 Record provider transitions and reject fallback to providers not explicitly declared compatible
+- [x] 5.4 Record provider transitions and reject fallback to providers not explicitly declared compatible
 
 ## 6. Policy, Approval, Retry, and Recovery [MUST HAVE]
 
-- [ ] 6.1 Implement risk classification and policy evaluation for low-, medium-, and high-risk actions
-- [ ] 6.2 Implement structured Approval persistence and gating for high-risk operations and material scope changes
-- [ ] 6.3 Implement bounded retries, retry exhaustion, compatible fallback, no-fallback behavior, and human escalation flow
-- [ ] 6.4 Implement distinct SafeStopped behavior: stop scheduling, do not apply pending privileged ChangeSets, preserve evidence, persist reason, and permit authorized recovery
+- [x] 6.1 Implement risk classification and policy evaluation for low-, medium-, and high-risk actions
+- [x] 6.2 Implement structured Approval persistence and gating for high-risk operations and material scope changes
+- [x] 6.3 Implement bounded retries, retry exhaustion, compatible fallback, no-fallback behavior, and human escalation flow
+- [x] 6.4 Implement distinct SafeStopped behavior: stop scheduling, do not apply pending privileged ChangeSets, preserve evidence, persist reason, and permit authorized recovery
 - [ ] 6.5 Implement workflow/artifact rollback and recovery checkpoints
 
 ## 7. Dynamic Re-planning and Impact Analysis [MUST HAVE]
@@ -56,8 +56,8 @@
 
 - [x] 8.1 Verify legal and illegal workflow state transitions and legal and illegal node state transitions
 - [x] 8.2 Verify successful nodes cannot rerun without invalidation, dependency-aware scheduling, parallel branches, and synchronization barriers
-- [ ] 8.3 Verify bounded retry, retry exhaustion, compatible fallback, no-compatible-fallback behavior, and SafeStopped semantics
-- [ ] 8.4 Verify approval blocking/resumption, policy rejection, and ReleaseReadiness rejection without required validation/policy/approval evidence
+- [x] 8.3 Verify bounded retry, retry exhaustion, compatible fallback, no-compatible-fallback behavior, and SafeStopped semantics
+- [x] 8.4 Verify approval blocking/resumption, policy rejection, and ReleaseReadiness rejection without required validation/policy/approval evidence
 - [ ] 8.5 Verify artifact immutability, version lineage, dependency impact analysis, selective invalidation, preservation of unaffected completed work, and plan revision lineage
 - [ ] 8.6 Verify workflow/artifact rollback and persisted event-derived reliability metrics, including Mean Recovery Time
 - [ ] 8.7 Verify greenfield, brownfield, and ambiguous scenarios through deterministic end-to-end tests

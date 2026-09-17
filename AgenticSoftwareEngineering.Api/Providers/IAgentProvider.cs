@@ -1,3 +1,5 @@
+using AgenticSoftwareEngineering.Api.Domain.Orchestration;
+
 namespace AgenticSoftwareEngineering.Api.Providers;
 
 public sealed record AgentExecutionRequest(
@@ -14,7 +16,8 @@ public sealed record AgentExecutionResponse(
     string ArtifactType,
     string ContentReference,
     string ContentHash,
-    string? FailureReason = null);
+    string? FailureReason = null,
+    FailureClassification FailureClassification = FailureClassification.Permanent);
 
 public interface IAgentProvider
 {
@@ -26,7 +29,7 @@ public interface IAgentProvider
 public sealed class DeterministicAgentProvider : IAgentProvider
 {
     public string Name => "deterministic";
-    public IReadOnlySet<string> CompatibleFallbackProviders { get; } = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+    public IReadOnlySet<string> CompatibleFallbackProviders { get; } = new HashSet<string>(new[] { "deterministic-fallback" }, StringComparer.OrdinalIgnoreCase);
 
     public Task<AgentExecutionResponse> ExecuteAsync(AgentExecutionRequest request, CancellationToken cancellationToken)
     {
@@ -45,4 +48,13 @@ public sealed class DeterministicAgentProvider : IAgentProvider
         var hash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(output)));
         return Task.FromResult(new AgentExecutionResponse(true, output, artifactType, reference, hash));
     }
+}
+
+public sealed class DeterministicFallbackProvider : IAgentProvider
+{
+    public string Name => "deterministic-fallback";
+    public IReadOnlySet<string> CompatibleFallbackProviders { get; } = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+    public Task<AgentExecutionResponse> ExecuteAsync(AgentExecutionRequest request, CancellationToken cancellationToken) =>
+        new DeterministicAgentProvider().ExecuteAsync(request, cancellationToken);
 }
