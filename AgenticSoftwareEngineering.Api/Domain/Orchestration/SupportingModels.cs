@@ -107,20 +107,44 @@ public sealed class AgentExecution
     }
 
     public AgentExecution(Guid workflowNodeId, string providerName, DateTimeOffset startedAtUtc)
+        : this(workflowNodeId, providerName, 1, startedAtUtc)
+    {
+    }
+
+    public AgentExecution(Guid workflowNodeId, string providerName, int attempt, DateTimeOffset startedAtUtc)
     {
         if (workflowNodeId == Guid.Empty) throw new ArgumentException("A workflow node id is required.", nameof(workflowNodeId));
         if (string.IsNullOrWhiteSpace(providerName)) throw new ArgumentException("A provider name is required.", nameof(providerName));
+        if (attempt < 1) throw new ArgumentOutOfRangeException(nameof(attempt));
         Id = Guid.NewGuid();
         WorkflowNodeId = workflowNodeId;
         ProviderName = providerName;
+        Attempt = attempt;
         StartedAtUtc = startedAtUtc;
     }
 
     public Guid Id { get; private set; }
     public Guid WorkflowNodeId { get; private set; }
     public string ProviderName { get; private set; } = string.Empty;
+    public int Attempt { get; private set; }
     public DateTimeOffset StartedAtUtc { get; private set; }
     public DateTimeOffset? CompletedAtUtc { get; private set; }
+    public AgentExecutionStatus Status { get; private set; } = AgentExecutionStatus.Started;
+    public string? OutputSummary { get; private set; }
+
+    public void Complete(AgentExecutionStatus status, DateTimeOffset completedAtUtc, string? outputSummary)
+    {
+        Status = status;
+        CompletedAtUtc = completedAtUtc;
+        OutputSummary = outputSummary;
+    }
+}
+
+public enum AgentExecutionStatus
+{
+    Started = 1,
+    Succeeded = 2,
+    Failed = 3
 }
 
 public enum DecisionOutcome

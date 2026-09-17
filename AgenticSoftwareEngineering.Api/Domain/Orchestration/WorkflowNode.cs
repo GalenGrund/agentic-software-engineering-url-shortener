@@ -7,6 +7,11 @@ public sealed class WorkflowNode
     }
 
     public WorkflowNode(Guid workflowId, string name, DateTimeOffset createdAtUtc)
+        : this(workflowId, name, "unspecified", createdAtUtc)
+    {
+    }
+
+    public WorkflowNode(Guid workflowId, string name, string taskType, DateTimeOffset createdAtUtc)
     {
         if (workflowId == Guid.Empty)
         {
@@ -18,9 +23,15 @@ public sealed class WorkflowNode
             throw new ArgumentException("A node name is required.", nameof(name));
         }
 
+        if (string.IsNullOrWhiteSpace(taskType))
+        {
+            throw new ArgumentException("A task type is required.", nameof(taskType));
+        }
+
         Id = Guid.NewGuid();
         WorkflowId = workflowId;
         Name = name;
+        TaskType = taskType;
         CreatedAtUtc = createdAtUtc;
         State = WorkflowNodeState.Pending;
     }
@@ -28,6 +39,7 @@ public sealed class WorkflowNode
     public Guid Id { get; private set; }
     public Guid WorkflowId { get; private set; }
     public string Name { get; private set; } = string.Empty;
+    public string TaskType { get; private set; } = string.Empty;
     public DateTimeOffset CreatedAtUtc { get; private set; }
     public WorkflowNodeState State { get; private set; }
     public Workflow? Workflow { get; private set; }

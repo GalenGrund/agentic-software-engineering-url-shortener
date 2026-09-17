@@ -71,6 +71,7 @@ public static class WorkflowStateRules
             (WorkflowNodeState.Executing, WorkflowNodeState.Blocked) => true,
             (WorkflowNodeState.Executing, WorkflowNodeState.RetryScheduled) => true,
             (WorkflowNodeState.Executing, WorkflowNodeState.Validating) => true,
+            (WorkflowNodeState.Validating, WorkflowNodeState.Failed) => true,
             (WorkflowNodeState.Executing, WorkflowNodeState.Failed) => true,
             (WorkflowNodeState.Validating, WorkflowNodeState.Succeeded) => true,
             (WorkflowNodeState.Succeeded, WorkflowNodeState.Invalidated) => true,

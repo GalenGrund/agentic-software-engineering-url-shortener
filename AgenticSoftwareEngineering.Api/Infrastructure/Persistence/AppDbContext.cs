@@ -57,6 +57,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             entity.ToTable("Orchestration_WorkflowNodes");
             entity.HasKey(node => node.Id);
             entity.Property(node => node.Name).HasMaxLength(200).IsRequired();
+            entity.Property(node => node.TaskType).HasMaxLength(100).IsRequired();
         });
 
         modelBuilder.Entity<PlanRevision>(entity =>
@@ -91,7 +92,13 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
         });
 
         modelBuilder.Entity<WorkflowEvent>().ToTable("Orchestration_WorkflowEvents");
-        modelBuilder.Entity<AgentExecution>().ToTable("Orchestration_AgentExecutions");
+        modelBuilder.Entity<AgentExecution>(entity =>
+        {
+            entity.ToTable("Orchestration_AgentExecutions");
+            entity.HasKey(execution => execution.Id);
+            entity.Property(execution => execution.ProviderName).HasMaxLength(100).IsRequired();
+            entity.Property(execution => execution.OutputSummary).HasMaxLength(2000);
+        });
         modelBuilder.Entity<Decision>().ToTable("Orchestration_Decisions");
         modelBuilder.Entity<Approval>().ToTable("Orchestration_Approvals");
         modelBuilder.Entity<PolicyEvaluation>().ToTable("Orchestration_PolicyEvaluations");

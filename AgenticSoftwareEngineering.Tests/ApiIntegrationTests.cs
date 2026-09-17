@@ -52,6 +52,49 @@ public sealed class ApiIntegrationTests : IClassFixture<ApiFactory>
         Assert.Equal("short_link_not_found", error?.Code);
     }
 
+    [Fact]
+    public async Task Gate2WorkflowApiExposesPersistedDagParallelReadyStateAndCompletionEvidence()
+    {
+        using var create = await client.PostAsJsonAsync("/api/workflows/greenfield", new { requirement = "Create a short URL" });
+        Assert.Equal(HttpStatusCode.Created, create.StatusCode);
+        using var created = JsonDocument.Parse(await create.Content.ReadAsStringAsync());
+        var workflowId = created.RootElement.GetProperty("workflowId").GetGuid();
+
+        await client.PostAsync($"/api/workflows/{workflowId}/advance", null);
+        using var parallelResponse = await client.PostAsync($"/api/workflows/{workflowId}/advance", null);
+        using var parallel = JsonDocument.Parse(await parallelResponse.Content.ReadAsStringAsync());
+        var readyTaskTypes = parallel.RootElement.GetProperty("nodes").EnumerateArray()
+            .Where(node => node.GetProperty("state").GetString() == "Ready")
+            .Select(node => node.GetProperty("taskType").GetString())
+            .ToList();
+        Assert.Contains("architecture-design", readyTaskTypes);
+        Assert.Contains("implementation-preparation", readyTaskTypes);
+        Assert.Equal(6, parallel.RootElement.GetProperty("dependencies").GetArrayLength());
+
+        JsonDocument? final = null;
+        for (var attempt = 0; attempt < 8; attempt++)
+        {
+            final?.Dispose();
+            var response = await client.PostAsync($"/api/workflows/{workflowId}/advance", null);
+            final = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+            if (final.RootElement.GetProperty("state").GetString() == "Completed")
+            {
+                break;
+            }
+        }
+
+        using (final)
+        {
+            Assert.Equal("Completed", final!.RootElement.GetProperty("state").GetString());
+            Assert.Equal(6, final.RootElement.GetProperty("executions").GetArrayLength());
+            Assert.Equal(6, final.RootElement.GetProperty("artifacts").GetArrayLength());
+            Assert.Contains(final.RootElement.GetProperty("validations").EnumerateArray(), validation =>
+                validation.GetProperty("validationName").GetString() == "release-readiness" && validation.GetProperty("passed").GetBoolean());
+            Assert.Contains(final.RootElement.GetProperty("events").EnumerateArray(), eventItem =>
+                eventItem.GetProperty("eventType").GetString() == "ReleaseReadinessEvaluated");
+        }
+    }
+
     private sealed record ApiError(string Code, string Message);
 }
 
