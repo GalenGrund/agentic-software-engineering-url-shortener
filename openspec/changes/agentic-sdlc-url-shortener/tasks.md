@@ -14,7 +14,7 @@
 
 ## 3. Domain and Workload Model [MUST HAVE]
 
-- [ ] 3.1 Implement the greenfield domain model for short links, generated codes, validation, basic analytics, and later enhancement metadata
+- [x] 3.1 Implement the greenfield domain model for short links, generated codes, validation, basic analytics, and later enhancement metadata
 - [x] 3.2 Implement URL validation and unique code generation for the greenfield baseline
 - [x] 3.3 Implement create-short-link API and redirect API with consistent error contracts and testable outcomes
 - [x] 3.4 Implement privacy-minimized analytics without source/client IP persistence by default
