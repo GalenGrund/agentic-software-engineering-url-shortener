@@ -53,11 +53,17 @@ public sealed class OrchestrationService(
         db.WorkflowNodes.AddRange(nodes);
         db.Dependencies.AddRange(dependencies);
         AddEvent(workflow.Id, "WorkflowCreated", requirement, now);
+        var ambiguity = AssessRequirement(requirement);
+        AddEvent(workflow.Id, "RequirementAssessed", $"classification={ambiguity.Classification};reason={ambiguity.Reason}", now);
         AddEvent(workflow.Id, "PlanRevisionCreated", $"revision={plan.Revision}", now);
 
         var initialReady = nodes.Single(node => node.TaskType == "normalize-requirement");
         initialReady.TransitionTo(WorkflowNodeState.Ready);
         AddEvent(workflow.Id, "NodeReady", initialReady.Name, now);
+        if (ambiguity.Classification == RequirementClassification.ClarificationRequired)
+        {
+            TransitionWorkflow(workflow, WorkflowState.Blocked, "ClarificationRequired", ambiguity.Reason);
+        }
         await db.SaveChangesAsync(cancellationToken);
         return await GetStatusAsync(workflow.Id, cancellationToken);
     }
@@ -156,7 +162,9 @@ public sealed class OrchestrationService(
         var validations = (await db.ValidationResults.AsNoTracking().Where(item => item.WorkflowId == workflowId).ToListAsync(cancellationToken)).OrderBy(item => item.ValidatedAtUtc).ToList();
         var policies = await db.PolicyEvaluations.AsNoTracking().Where(item => item.WorkflowId == workflowId).ToListAsync(cancellationToken);
         var approvals = await db.Approvals.AsNoTracking().Where(item => item.WorkflowId == workflowId).ToListAsync(cancellationToken);
-        var events = (await db.WorkflowEvents.AsNoTracking().Where(item => item.WorkflowId == workflowId).ToListAsync(cancellationToken)).OrderBy(item => item.OccurredAtUtc).ToList();
+        var events = (await db.WorkflowEvents.AsNoTracking().Where(item => item.WorkflowId == workflowId).ToListAsync(cancellationToken))
+            .OrderBy(item => item.OccurredAtUtc)
+            .ToList();
         var planRevisions = await db.PlanRevisions.AsNoTracking().Where(item => item.WorkflowId == workflowId).OrderBy(item => item.Revision).ToListAsync(cancellationToken);
         var artifactDependencies = await db.ArtifactDependencies.AsNoTracking().Where(item => artifacts.Select(artifact => artifact.Id).Contains(item.DependentArtifactId)).ToListAsync(cancellationToken);
 
@@ -173,7 +181,113 @@ public sealed class OrchestrationService(
             approvals.Select(item => new ApprovalStatusResponse(item.Id, item.WorkflowNodeId, item.PlanRevisionId, item.Action, item.Risk, item.Decision, item.ApproverRole, item.Rationale, item.RequestedAtUtc, item.DecidedAtUtc)).ToList(),
             events.Select(item => new EventStatusResponse(item.Id, item.EventType, item.Details, item.OccurredAtUtc)).ToList(),
             planRevisions.Select(item => new PlanRevisionStatusResponse(item.Id, item.Revision, item.SupersedesRevisionId, item.CreatedAtUtc)).ToList(),
-            artifactDependencies.Select(item => new ArtifactDependencyStatusResponse(item.Id, item.ArtifactId, item.DependentArtifactId)).ToList());
+            artifactDependencies.Select(item => new ArtifactDependencyStatusResponse(item.Id, item.ArtifactId, item.DependentArtifactId)).ToList(),
+            events.Any(item => item.EventType == "ArtifactSuperseded") ? "brownfield" : "greenfield",
+            GetClarificationStatus(events));
+    }
+
+    public async Task<WorkflowStatusResponse> ProvideClarificationAsync(Guid workflowId, ClarificationRequest request, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(request.Clarification))
+        {
+            throw new ArgumentException("A clarification is required.", nameof(request));
+        }
+
+        var workflow = await GetWorkflowAsync(workflowId, cancellationToken);
+        var events = (await db.WorkflowEvents.Where(item => item.WorkflowId == workflowId).ToListAsync(cancellationToken))
+            .OrderBy(item => item.OccurredAtUtc)
+            .ToList();
+        if (workflow.State != WorkflowState.Blocked || !events.Any(item => item.EventType == "ClarificationRequired"))
+        {
+            throw new InvalidOperationException("The workflow is not waiting for clarification.");
+        }
+        if (events.Any(item => item.EventType == "ClarificationResolved"))
+        {
+            throw new InvalidOperationException("The clarification has already been resolved.");
+        }
+
+        var now = timeProvider.GetUtcNow();
+        AddEvent(workflowId, "ClarificationProvided", request.Clarification.Trim(), now);
+        var originalRequirement = events.First(item => item.EventType == "WorkflowCreated").Details;
+        var reassessment = AssessRequirement(originalRequirement, request.Clarification.Trim());
+        AddEvent(workflowId, "RequirementReassessed", $"classification={reassessment.Classification};reason={reassessment.Reason}", now);
+        if (reassessment.Classification != RequirementClassification.Clear)
+        {
+            await db.SaveChangesAsync(cancellationToken);
+            throw new InvalidOperationException("The clarification did not resolve the deterministic ambiguity.");
+        }
+
+        var clarifiedContent = request.Clarification.Trim();
+        var previousClarificationArtifact = await GetLatestArtifactAsync(workflowId, "clarified-requirement", cancellationToken);
+        var clarifiedArtifact = EngineeringArtifact.Create(
+            workflowId,
+            "clarified-requirement",
+            previousClarificationArtifact is null ? 1 : previousClarificationArtifact.Version + 1,
+            $"clarification://{workflowId:N}/{now:O}",
+            Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(clarifiedContent))),
+            null,
+            null,
+            previousClarificationArtifact?.Id,
+            now);
+        clarifiedArtifact.SetValidationStatus(ArtifactValidationStatus.Valid);
+        db.EngineeringArtifacts.Add(clarifiedArtifact);
+        AddEvent(workflowId, "ClarifiedRequirementArtifactProduced", $"artifact={clarifiedArtifact.Id};version={clarifiedArtifact.Version}", now);
+        TransitionWorkflow(workflow, WorkflowState.Replanning, "ClarificationResolved", "Deterministic reassessment is clear.");
+        TransitionWorkflow(workflow, WorkflowState.Planning, "WorkflowStateChanged", "Replanning -> Planning after clarification");
+        await db.SaveChangesAsync(cancellationToken);
+        return await GetStatusAsync(workflowId, cancellationToken);
+    }
+
+    public async Task<WorkflowMetricsResponse> GetMetricsAsync(Guid workflowId, CancellationToken cancellationToken)
+    {
+        _ = await GetWorkflowAsync(workflowId, cancellationToken);
+        var events = (await db.WorkflowEvents.AsNoTracking().Where(item => item.WorkflowId == workflowId).ToListAsync(cancellationToken))
+            .OrderBy(item => item.OccurredAtUtc)
+            .ToList();
+        var nodeIds = await db.WorkflowNodes.AsNoTracking().Where(item => item.WorkflowId == workflowId).Select(item => item.Id).ToListAsync(cancellationToken);
+        var executions = await db.AgentExecutions.AsNoTracking().Where(item => nodeIds.Contains(item.WorkflowNodeId)).ToListAsync(cancellationToken);
+        var approvals = await db.Approvals.AsNoTracking().Where(item => item.WorkflowId == workflowId).ToListAsync(cancellationToken);
+        var workflowCreated = events.FirstOrDefault(item => item.EventType == "WorkflowCreated");
+        var terminal = events.LastOrDefault(item => item.EventType is "WorkflowCompleted" or "SafeStopped" or "NodeFailed");
+        var providerCompleted = executions.Where(item => item.CompletedAtUtc.HasValue).ToList();
+        var retryCount = events.Count(item => item.EventType == "RetryScheduled");
+        var fallbackCount = events.Count(item => item.EventType == "FallbackSelected");
+        var approvalWaits = approvals.Where(item => item.DecidedAtUtc.HasValue).Select(item => item.DecidedAtUtc!.Value - item.RequestedAtUtc).ToList();
+        var recoveryDurations = events.Where(item => item.EventType == "RetryScheduled")
+            .Select(ParseRetryEvidence)
+            .Where(item => item is not null)
+            .Select(retry =>
+            {
+                var recovery = executions
+                    .Where(execution => execution.WorkflowNodeId == retry!.Value.NodeId && execution.Attempt == retry.Value.Attempt + 1 && execution.Status == AgentExecutionStatus.Succeeded && execution.CompletedAtUtc >= retry.Value.ScheduledAtUtc)
+                    .OrderBy(execution => execution.Attempt)
+                    .ThenBy(execution => execution.CompletedAtUtc)
+                    .FirstOrDefault();
+                return recovery?.CompletedAtUtc is DateTimeOffset completedAt
+                    ? completedAt - retry!.Value.ScheduledAtUtc
+                    : (TimeSpan?)null;
+            })
+            .Where(item => item.HasValue)
+            .Select(item => item!.Value)
+            .ToList();
+        var safeStopped = events.Any(item => item.EventType == "SafeStopped");
+        var completed = events.Any(item => item.EventType == "WorkflowCompleted");
+        var totalAttempts = executions.Count;
+
+        return new WorkflowMetricsResponse(
+            workflowId,
+            completed,
+            workflowCreated is not null && terminal is not null ? (terminal.OccurredAtUtc - workflowCreated.OccurredAtUtc).TotalMilliseconds : null,
+            totalAttempts,
+            providerCompleted.Count > 0 ? providerCompleted.Where(item => item.CompletedAtUtc.HasValue).Average(item => (item.CompletedAtUtc!.Value - item.StartedAtUtc).TotalMilliseconds) : null,
+            retryCount,
+            totalAttempts > 0 ? (double)retryCount / totalAttempts : null,
+            fallbackCount,
+            totalAttempts > 0 ? (double)fallbackCount / totalAttempts : null,
+            safeStopped,
+            approvals.Count,
+            approvalWaits.Count > 0 ? approvalWaits.Average(item => item.TotalMilliseconds) : null,
+            recoveryDurations.Count > 0 ? recoveryDurations.Average(item => item.TotalMilliseconds) : null);
     }
 
     public async Task<WorkflowStatusResponse> ReviseArtifactAsync(Guid workflowId, Guid artifactId, BrownfieldArtifactRevisionRequest request, CancellationToken cancellationToken)
@@ -260,7 +374,7 @@ public sealed class OrchestrationService(
             .ToArray();
         var upstreamArtifacts = await GetEffectiveUpstreamArtifactsAsync(workflow.Id, predecessorNodeIds, cancellationToken);
         var upstreamReferences = upstreamArtifacts.Select(artifact => artifact.ContentReference).ToList();
-        var request = new AgentExecutionRequest(workflow.Id, node.Id, node.TaskType, TaskInstructions[node.TaskType], upstreamReferences, execution.Attempt);
+            var request = new AgentExecutionRequest(workflow.Id, node.Id, node.TaskType, TaskInstructions[node.TaskType], upstreamReferences, execution.Attempt, await GetEffectiveRequirementAsync(workflow.Id, cancellationToken));
         var response = await provider.ExecuteAsync(request, cancellationToken);
         execution.Complete(response.Succeeded ? AgentExecutionStatus.Succeeded : AgentExecutionStatus.Failed, timeProvider.GetUtcNow(), response.Output);
         AddEvent(workflow.Id, response.Succeeded ? "ProviderExecutionCompleted" : "ProviderExecutionFailed", node.Name, timeProvider.GetUtcNow());
@@ -270,7 +384,7 @@ public sealed class OrchestrationService(
             if (response.FailureClassification == FailureClassification.Transient && attempt < MaxTotalExecutionAttempts)
             {
                 node.TransitionTo(WorkflowNodeState.RetryScheduled);
-                AddEvent(workflow.Id, "RetryScheduled", $"{node.Name}:attempt={attempt}", timeProvider.GetUtcNow());
+                AddEvent(workflow.Id, "RetryScheduled", $"node-id={node.Id};attempt={attempt}", timeProvider.GetUtcNow());
                 return;
             }
 
@@ -384,7 +498,7 @@ public sealed class OrchestrationService(
         var predecessorNodeIds = dependencies.Where(item => item.SuccessorNodeId == node.Id).Select(item => item.PredecessorNodeId).ToArray();
         var upstreamArtifacts = await GetEffectiveUpstreamArtifactsAsync(workflow.Id, predecessorNodeIds, cancellationToken);
         var upstreamReferences = upstreamArtifacts.Select(artifact => artifact.ContentReference).ToList();
-        var response = await selectedProvider.ExecuteAsync(new AgentExecutionRequest(workflow.Id, node.Id, node.TaskType, TaskInstructions[node.TaskType], upstreamReferences, attempt), cancellationToken);
+        var response = await selectedProvider.ExecuteAsync(new AgentExecutionRequest(workflow.Id, node.Id, node.TaskType, TaskInstructions[node.TaskType], upstreamReferences, attempt, await GetEffectiveRequirementAsync(workflow.Id, cancellationToken)), cancellationToken);
         execution.Complete(response.Succeeded ? AgentExecutionStatus.Succeeded : AgentExecutionStatus.Failed, timeProvider.GetUtcNow(), response.Output);
         AddEvent(workflow.Id, response.Succeeded ? "ProviderExecutionCompleted" : "ProviderExecutionFailed", $"{node.Name}:{selectedProvider.Name}", timeProvider.GetUtcNow());
         if (!response.Succeeded)
@@ -476,11 +590,63 @@ public sealed class OrchestrationService(
     private void AddEvent(Guid workflowId, string eventType, string details, DateTimeOffset occurredAtUtc) =>
         db.WorkflowEvents.Add(new WorkflowEvent(workflowId, eventType, details, occurredAtUtc));
 
+    private static RequirementAssessment AssessRequirement(string requirement, string? clarification = null)
+    {
+        var normalized = requirement.Trim().ToLowerInvariant();
+        var clarificationText = clarification?.Trim().ToLowerInvariant() ?? string.Empty;
+        var requiresExpirationClarification = normalized.Contains("expire") || normalized.Contains("expiration");
+        var hasDuration = clarificationText.Contains("day") || clarificationText.Contains("week") || clarificationText.Contains("month") || clarificationText.Contains("hour");
+        var hasTimeBasis = clarificationText.Contains("utc");
+        var hasResolvedExpirationDetails = hasDuration && hasTimeBasis;
+        if ((requiresExpirationClarification && !hasResolvedExpirationDetails) || normalized.Contains("unspecified") || normalized.Contains("unclear"))
+        {
+            return new RequirementAssessment(RequirementClassification.ClarificationRequired, requiresExpirationClarification
+                ? "Expiration requires a bounded duration and UTC time basis."
+                : "The requirement contains an unspecified or unclear material behavior.");
+        }
+
+        return new RequirementAssessment(RequirementClassification.Clear, "The bounded deterministic ambiguity rules found no blocking signal.");
+    }
+
+    private static string? GetClarificationStatus(IReadOnlyCollection<WorkflowEvent> events) =>
+        events.Any(item => item.EventType == "ClarificationResolved") ? "Resolved" :
+        events.Any(item => item.EventType == "ClarificationRequired") ? "Required" : null;
+
+    private enum RequirementClassification
+    {
+        Clear,
+        ClarificationRequired
+    }
+
+    private sealed record RequirementAssessment(RequirementClassification Classification, string Reason);
+
     private Task<EngineeringArtifact?> GetLatestArtifactAsync(Guid workflowId, string artifactType, CancellationToken cancellationToken) =>
         db.EngineeringArtifacts.Where(item => item.WorkflowId == workflowId && item.ArtifactType == artifactType).OrderByDescending(item => item.Version).FirstOrDefaultAsync(cancellationToken);
 
     private Task<PlanRevision?> GetActivePlanRevisionAsync(Guid workflowId, CancellationToken cancellationToken) =>
         db.PlanRevisions.Where(item => item.WorkflowId == workflowId).OrderByDescending(item => item.Revision).FirstOrDefaultAsync(cancellationToken);
+
+    private async Task<string?> GetEffectiveRequirementAsync(Guid workflowId, CancellationToken cancellationToken)
+    {
+        var events = await db.WorkflowEvents.AsNoTracking().Where(item => item.WorkflowId == workflowId).ToListAsync(cancellationToken);
+        var original = events.FirstOrDefault(item => item.EventType == "WorkflowCreated")?.Details;
+        var clarification = events.LastOrDefault(item => item.EventType == "ClarificationProvided")?.Details;
+        return clarification is null ? original : $"{original} Clarification: {clarification}";
+    }
+
+    private static RetryEvidence? ParseRetryEvidence(WorkflowEvent workflowEvent)
+    {
+        var values = workflowEvent.Details.Split(';', StringSplitOptions.RemoveEmptyEntries)
+            .Select(part => part.Split('=', 2))
+            .Where(parts => parts.Length == 2)
+            .ToDictionary(parts => parts[0], parts => parts[1], StringComparer.OrdinalIgnoreCase);
+        return Guid.TryParse(values.GetValueOrDefault("node-id"), out var nodeId) &&
+            int.TryParse(values.GetValueOrDefault("attempt"), out var attempt)
+            ? new RetryEvidence(nodeId, attempt, workflowEvent.OccurredAtUtc)
+            : null;
+    }
+
+    private readonly record struct RetryEvidence(Guid NodeId, int Attempt, DateTimeOffset ScheduledAtUtc);
 
     private Task<Workflow> GetWorkflowAsync(Guid workflowId, CancellationToken cancellationToken) =>
         db.Workflows.SingleOrDefaultAsync(item => item.Id == workflowId, cancellationToken)

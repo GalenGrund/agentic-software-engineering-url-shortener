@@ -36,4 +36,12 @@ public sealed class WorkflowsController(IOrchestrationService service) : Control
     [HttpPost("{workflowId:guid}/rollback")]
     public async Task<ActionResult<WorkflowStatusResponse>> Rollback(Guid workflowId, WorkflowRollbackRequest request, CancellationToken cancellationToken) =>
         Ok(await service.RollbackAsync(workflowId, request, cancellationToken));
+
+    [HttpPost("{workflowId:guid}/clarification")]
+    public async Task<ActionResult<WorkflowStatusResponse>> ProvideClarification(Guid workflowId, ClarificationRequest request, CancellationToken cancellationToken) =>
+        Ok(await service.ProvideClarificationAsync(workflowId, request, cancellationToken));
+
+    [HttpGet("{workflowId:guid}/metrics")]
+    public async Task<ActionResult<WorkflowMetricsResponse>> GetMetrics(Guid workflowId, CancellationToken cancellationToken) =>
+        Ok(await service.GetMetricsAsync(workflowId, cancellationToken));
 }

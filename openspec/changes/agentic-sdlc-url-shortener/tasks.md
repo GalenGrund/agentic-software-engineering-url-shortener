@@ -32,7 +32,7 @@
 ## 5. Agent and Provider Execution [MUST HAVE]
 
 - [x] 5.1 Define the common agent execution contract and provider compatibility declarations
-- [ ] 5.2 Implement the deterministic provider for repeatable testing, ambiguity handling, failure injection, and credential-free end-to-end execution
+- [x] 5.2 Implement the deterministic provider for repeatable testing, ambiguity handling, failure injection, and credential-free end-to-end execution
 - [ ] 5.3 Add structured ActionProposal and ChangeSet handling before privileged execution is allowed
 - [x] 5.4 Record provider transitions and reject fallback to providers not explicitly declared compatible
 
@@ -50,7 +50,7 @@
 - [x] 7.2 Implement plan revision generation with lineage and preservation of unaffected valid work
 - [x] 7.3 Verify that successful nodes cannot rerun without explicit invalidation and approved re-plan
 - [ ] 7.4 Implement the brownfield custom-alias re-planning scenario
-- [ ] 7.5 Implement the ambiguous expiration scenario: deterministic questions, blocked state, persisted clarification, revised requirement artifact, and resumed execution
+- [x] 7.5 Implement the ambiguous expiration scenario: deterministic questions, blocked state, persisted clarification, revised requirement artifact, and resumed execution
 
 ## 8. Independent Orchestration Verification [MUST HAVE]
 
@@ -59,12 +59,12 @@
 - [x] 8.3 Verify bounded retry, retry exhaustion, compatible fallback, no-compatible-fallback behavior, and SafeStopped semantics
 - [x] 8.4 Verify approval blocking/resumption, policy rejection, and ReleaseReadiness rejection without required validation/policy/approval evidence
 - [x] 8.5 Verify artifact immutability, version lineage, dependency impact analysis, selective invalidation, preservation of unaffected completed work, and plan revision lineage
-- [ ] 8.6 Verify workflow/artifact rollback and persisted event-derived reliability metrics, including Mean Recovery Time
-- [ ] 8.7 Verify greenfield, brownfield, and ambiguous scenarios through deterministic end-to-end tests
+- [x] 8.6 Verify workflow/artifact rollback and persisted event-derived reliability metrics, including Mean Recovery Time
+- [x] 8.7 Verify greenfield, brownfield, and ambiguous scenarios through deterministic end-to-end tests
 
 ## 9. Observability and Documentation [MUST HAVE]
 
-- [ ] 9.1 Implement workflow event capture and metrics derivation for success, retries, rollback, SafeStopped, approval latency, Mean Recovery Time, and end-to-end latency
+- [x] 9.1 Implement workflow event capture and metrics derivation for success, retries, rollback, SafeStopped, approval latency, Mean Recovery Time, and end-to-end latency
 - [ ] 9.2 Write README, architecture overview, security/trust-boundary explanation, scenario walkthroughs, testing approach, privacy decision, assumptions, limitations, and prototype-versus-production trade-offs
 - [ ] 9.3 Verify the repository can be cloned, built, tested, and demonstrated without external AI credentials
 

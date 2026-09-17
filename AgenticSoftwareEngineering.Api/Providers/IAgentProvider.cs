@@ -8,7 +8,8 @@ public sealed record AgentExecutionRequest(
     string TaskType,
     string Instructions,
     IReadOnlyList<string> UpstreamArtifactReferences,
-    int Attempt);
+    int Attempt,
+    string? EffectiveRequirement = null);
 
 public sealed record AgentExecutionResponse(
     bool Succeeded,

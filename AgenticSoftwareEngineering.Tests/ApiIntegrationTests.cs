@@ -164,6 +164,48 @@ public sealed class ApiIntegrationTests : IClassFixture<ApiFactory>
         }
     }
 
+    [Fact]
+    public async Task Gate5ClarificationApiBlocksAndResumesAmbiguousRequirement()
+    {
+        using var create = await client.PostAsJsonAsync("/api/workflows/greenfield", new { requirement = "Make shortened URLs expire." });
+        using var blocked = JsonDocument.Parse(await create.Content.ReadAsStringAsync());
+        var workflowId = blocked.RootElement.GetProperty("workflowId").GetGuid();
+        Assert.Equal("Blocked", blocked.RootElement.GetProperty("state").GetString());
+        Assert.Equal("Required", blocked.RootElement.GetProperty("clarificationStatus").GetString());
+
+        using var clarifiedResponse = await client.PostAsJsonAsync($"/api/workflows/{workflowId}/clarification", new { clarification = "Use UTC timestamps and a 30 day lifetime." });
+        using var clarified = JsonDocument.Parse(await clarifiedResponse.Content.ReadAsStringAsync());
+        Assert.Equal("Planning", clarified.RootElement.GetProperty("state").GetString());
+        Assert.Equal("Resolved", clarified.RootElement.GetProperty("clarificationStatus").GetString());
+        Assert.Contains(clarified.RootElement.GetProperty("events").EnumerateArray(), item => item.GetProperty("eventType").GetString() == "ClarificationResolved");
+    }
+
+    [Fact]
+    public async Task Gate5MetricsApiExposesDerivedCompletedWorkflowMetrics()
+    {
+        using var create = await client.PostAsJsonAsync("/api/workflows/greenfield", new { requirement = "Create a short URL" });
+        using var created = JsonDocument.Parse(await create.Content.ReadAsStringAsync());
+        var workflowId = created.RootElement.GetProperty("workflowId").GetGuid();
+        JsonDocument? final = null;
+        for (var attempt = 0; attempt < 10; attempt++)
+        {
+            final?.Dispose();
+            final = JsonDocument.Parse(await (await client.PostAsync($"/api/workflows/{workflowId}/advance", null)).Content.ReadAsStringAsync());
+            if (final.RootElement.GetProperty("state").GetString() == "Completed") break;
+        }
+
+        using (final)
+        using (var metricsResponse = await client.GetAsync($"/api/workflows/{workflowId}/metrics"))
+        using (var metrics = JsonDocument.Parse(await metricsResponse.Content.ReadAsStringAsync()))
+        {
+            Assert.Equal(HttpStatusCode.OK, metricsResponse.StatusCode);
+            Assert.True(metrics.RootElement.GetProperty("completed").GetBoolean());
+            Assert.Equal(6, metrics.RootElement.GetProperty("providerExecutionCount").GetInt32());
+            Assert.True(metrics.RootElement.GetProperty("workflowLatencyMilliseconds").GetDouble() >= 0);
+            Assert.True(metrics.RootElement.GetProperty("providerExecutionLatencyMilliseconds").GetDouble() >= 0);
+        }
+    }
+
     private sealed record ApiError(string Code, string Message);
 }
 

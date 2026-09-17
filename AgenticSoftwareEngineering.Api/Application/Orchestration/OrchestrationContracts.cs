@@ -12,6 +12,7 @@ public sealed record CreateWorkflowRequest(string Requirement, bool RequiresHigh
 public sealed record ApprovalDecisionRequest(bool Approved, string Rationale);
 public sealed record BrownfieldArtifactRevisionRequest(string ContentReference, string ContentHash, bool RequiresHighRiskApproval = false);
 public sealed record WorkflowRollbackRequest(Guid ArtifactId);
+public sealed record ClarificationRequest(string Clarification);
 
 public sealed record WorkflowStatusResponse(
     Guid WorkflowId,
@@ -26,7 +27,9 @@ public sealed record WorkflowStatusResponse(
     IReadOnlyList<ApprovalStatusResponse> Approvals,
     IReadOnlyList<EventStatusResponse> Events,
     IReadOnlyList<PlanRevisionStatusResponse> PlanRevisions,
-    IReadOnlyList<ArtifactDependencyStatusResponse> ArtifactDependencies);
+    IReadOnlyList<ArtifactDependencyStatusResponse> ArtifactDependencies,
+    string Scenario,
+    string? ClarificationStatus);
 
 public sealed record NodeStatusResponse(Guid Id, string Name, string TaskType, WorkflowNodeState State);
 public sealed record DependencyStatusResponse(Guid PredecessorNodeId, Guid SuccessorNodeId);
@@ -38,6 +41,20 @@ public sealed record ApprovalStatusResponse(Guid Id, Guid WorkflowNodeId, Guid? 
 public sealed record EventStatusResponse(Guid Id, string EventType, string Details, DateTimeOffset OccurredAtUtc);
 public sealed record PlanRevisionStatusResponse(Guid Id, int Revision, Guid? SupersedesRevisionId, DateTimeOffset CreatedAtUtc);
 public sealed record ArtifactDependencyStatusResponse(Guid Id, Guid ArtifactId, Guid DependentArtifactId);
+public sealed record WorkflowMetricsResponse(
+    Guid WorkflowId,
+    bool Completed,
+    double? WorkflowLatencyMilliseconds,
+    int ProviderExecutionCount,
+    double? ProviderExecutionLatencyMilliseconds,
+    int RetryCount,
+    double? RetryRate,
+    int FallbackCount,
+    double? FallbackRate,
+    bool SafeStopped,
+    int ApprovalCount,
+    double? ApprovalWaitMilliseconds,
+    double? MeanRecoveryTimeMilliseconds);
 
 public interface IOrchestrationService
 {
@@ -47,4 +64,6 @@ public interface IOrchestrationService
     Task<WorkflowStatusResponse> DecideApprovalAsync(Guid workflowId, Guid approvalId, ApprovalDecisionRequest request, CancellationToken cancellationToken);
     Task<WorkflowStatusResponse> ReviseArtifactAsync(Guid workflowId, Guid artifactId, BrownfieldArtifactRevisionRequest request, CancellationToken cancellationToken);
     Task<WorkflowStatusResponse> RollbackAsync(Guid workflowId, WorkflowRollbackRequest request, CancellationToken cancellationToken);
+    Task<WorkflowStatusResponse> ProvideClarificationAsync(Guid workflowId, ClarificationRequest request, CancellationToken cancellationToken);
+    Task<WorkflowMetricsResponse> GetMetricsAsync(Guid workflowId, CancellationToken cancellationToken);
 }
