@@ -132,7 +132,7 @@ The status then exposes `ClarificationProvided`, `RequirementReassessed`, `Clari
 
 ## 7. Test and Reproducibility Commands
 
-The accepted Gate 6 baseline reports 93 passing tests:
+The accepted Gate 6 baseline reports 96 passing tests:
 
 ```powershell
 dotnet restore AgenticSoftwareEngineering.slnx
