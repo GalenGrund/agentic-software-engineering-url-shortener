@@ -80,5 +80,8 @@ public sealed class EngineeringArtifact
         DateTimeOffset createdAtUtc) =>
         new(workflowId, artifactType, version, contentReference, contentHash, producerNodeId, producerExecutionId, supersedesArtifactId, createdAtUtc);
 
+    public static EngineeringArtifact Revise(EngineeringArtifact prior, string contentReference, string contentHash, DateTimeOffset createdAtUtc) =>
+        new(prior.WorkflowId, prior.ArtifactType, prior.Version + 1, contentReference, contentHash, prior.ProducerNodeId, prior.ProducerExecutionId, prior.Id, createdAtUtc);
+
     public void SetValidationStatus(ArtifactValidationStatus status) => ValidationStatus = status;
 }

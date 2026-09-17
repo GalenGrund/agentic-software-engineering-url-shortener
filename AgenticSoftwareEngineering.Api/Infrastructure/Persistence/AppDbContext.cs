@@ -21,6 +21,43 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
     public DbSet<PolicyEvaluation> PolicyEvaluations => Set<PolicyEvaluation>();
     public DbSet<ValidationResult> ValidationResults => Set<ValidationResult>();
 
+    public override int SaveChanges(bool acceptAllChangesOnSuccess)
+    {
+        ValidateArtifactDependencies();
+        return base.SaveChanges(acceptAllChangesOnSuccess);
+    }
+
+    public override Task<int> SaveChangesAsync(bool acceptAllChangesOnSuccess, CancellationToken cancellationToken = default)
+    {
+        ValidateArtifactDependencies();
+        return base.SaveChangesAsync(acceptAllChangesOnSuccess, cancellationToken);
+    }
+
+    private void ValidateArtifactDependencies()
+    {
+        var pending = ChangeTracker.Entries<ArtifactDependency>()
+            .Where(entry => entry.State is EntityState.Added or EntityState.Modified)
+            .Select(entry => entry.Entity)
+            .ToList();
+        if (pending.Count == 0) return;
+
+        var artifactIds = pending.SelectMany(edge => new[] { edge.ArtifactId, edge.DependentArtifactId }).Distinct().ToArray();
+        var workflows = EngineeringArtifacts.Where(artifact => artifactIds.Contains(artifact.Id))
+            .AsEnumerable()
+            .Concat(ChangeTracker.Entries<EngineeringArtifact>()
+                .Where(entry => entry.State is EntityState.Added or EntityState.Modified)
+                .Select(entry => entry.Entity))
+            .GroupBy(artifact => artifact.Id)
+            .ToDictionary(group => group.Key, group => group.First().WorkflowId);
+        foreach (var edge in pending)
+        {
+            if (!workflows.TryGetValue(edge.ArtifactId, out var sourceWorkflow) || !workflows.TryGetValue(edge.DependentArtifactId, out var dependentWorkflow) || sourceWorkflow != dependentWorkflow)
+            {
+                throw new InvalidOperationException("Artifact dependencies cannot cross workflows.");
+            }
+        }
+    }
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder.Entity<ShortLink>(entity =>

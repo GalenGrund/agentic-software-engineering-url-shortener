@@ -55,4 +55,6 @@ public sealed class WorkflowNode
 
         State = nextState;
     }
+
+    public void SetRisk(RiskLevel risk) => Risk = risk;
 }

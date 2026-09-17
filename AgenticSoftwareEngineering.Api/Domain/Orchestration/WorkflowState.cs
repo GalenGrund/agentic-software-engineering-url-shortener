@@ -58,6 +58,9 @@ public static class WorkflowStateRules
             (WorkflowState.Validating, WorkflowState.ReleaseReadiness) => true,
             (WorkflowState.ReleaseReadiness, WorkflowState.Completed) => true,
             (WorkflowState.ReleaseReadiness, WorkflowState.Blocked) => true,
+            (WorkflowState.Completed, WorkflowState.Replanning) => true,
+            (WorkflowState.Completed, WorkflowState.RollingBack) => true,
+            (WorkflowState.RollingBack, WorkflowState.Replanning) => true,
             (WorkflowState.SafeStopped, WorkflowState.Recovering) => true,
             (WorkflowState.RollingBack, WorkflowState.Recovering) => true,
             _ => false

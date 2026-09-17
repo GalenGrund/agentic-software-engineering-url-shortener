@@ -9,8 +9,8 @@
 ## 2. Artifact Foundations [MUST HAVE]
 
 - [x] 2.1 Implement immutable EngineeringArtifact records with content hashing, versioning, validation status, and producer provenance
-- [ ] 2.2 Implement artifact dependency records and lineage queries before higher-level re-planning behavior
-- [ ] 2.3 Implement artifact revision rules that preserve prior versions and reject mutation of immutable evidence
+- [x] 2.2 Implement artifact dependency records and lineage queries before higher-level re-planning behavior
+- [x] 2.3 Implement artifact revision rules that preserve prior versions and reject mutation of immutable evidence
 
 ## 3. Domain and Workload Model [MUST HAVE]
 
@@ -42,13 +42,13 @@
 - [x] 6.2 Implement structured Approval persistence and gating for high-risk operations and material scope changes
 - [x] 6.3 Implement bounded retries, retry exhaustion, compatible fallback, no-fallback behavior, and human escalation flow
 - [x] 6.4 Implement distinct SafeStopped behavior: stop scheduling, do not apply pending privileged ChangeSets, preserve evidence, persist reason, and permit authorized recovery
-- [ ] 6.5 Implement workflow/artifact rollback and recovery checkpoints
+- [x] 6.5 Implement workflow/artifact rollback and recovery checkpoints
 
 ## 7. Dynamic Re-planning and Impact Analysis [MUST HAVE]
 
-- [ ] 7.1 Implement dependency impact analysis to identify downstream artifact and node invalidation sets
-- [ ] 7.2 Implement plan revision generation with lineage and preservation of unaffected valid work
-- [ ] 7.3 Verify that successful nodes cannot rerun without explicit invalidation and approved re-plan
+- [x] 7.1 Implement dependency impact analysis to identify downstream artifact and node invalidation sets
+- [x] 7.2 Implement plan revision generation with lineage and preservation of unaffected valid work
+- [x] 7.3 Verify that successful nodes cannot rerun without explicit invalidation and approved re-plan
 - [ ] 7.4 Implement the brownfield custom-alias re-planning scenario
 - [ ] 7.5 Implement the ambiguous expiration scenario: deterministic questions, blocked state, persisted clarification, revised requirement artifact, and resumed execution
 
@@ -58,7 +58,7 @@
 - [x] 8.2 Verify successful nodes cannot rerun without invalidation, dependency-aware scheduling, parallel branches, and synchronization barriers
 - [x] 8.3 Verify bounded retry, retry exhaustion, compatible fallback, no-compatible-fallback behavior, and SafeStopped semantics
 - [x] 8.4 Verify approval blocking/resumption, policy rejection, and ReleaseReadiness rejection without required validation/policy/approval evidence
-- [ ] 8.5 Verify artifact immutability, version lineage, dependency impact analysis, selective invalidation, preservation of unaffected completed work, and plan revision lineage
+- [x] 8.5 Verify artifact immutability, version lineage, dependency impact analysis, selective invalidation, preservation of unaffected completed work, and plan revision lineage
 - [ ] 8.6 Verify workflow/artifact rollback and persisted event-derived reliability metrics, including Mean Recovery Time
 - [ ] 8.7 Verify greenfield, brownfield, and ambiguous scenarios through deterministic end-to-end tests
 

@@ -138,6 +138,32 @@ public sealed class ApiIntegrationTests : IClassFixture<ApiFactory>
         Assert.True(authorizationIndex >= 0 && authorizationIndex < executionIndex);
     }
 
+    [Fact]
+    public async Task Gate4BrownfieldApiExposesRevisionImpactAndRollbackLineage()
+    {
+        using var create = await client.PostAsJsonAsync("/api/workflows/greenfield", new { requirement = "Create a short URL" });
+        using var created = JsonDocument.Parse(await create.Content.ReadAsStringAsync());
+        var workflowId = created.RootElement.GetProperty("workflowId").GetGuid();
+        JsonDocument? completed = null;
+        for (var attempt = 0; attempt < 10; attempt++)
+        {
+            completed?.Dispose();
+            completed = JsonDocument.Parse(await (await client.PostAsync($"/api/workflows/{workflowId}/advance", null)).Content.ReadAsStringAsync());
+            if (completed.RootElement.GetProperty("state").GetString() == "Completed") break;
+        }
+
+        using (completed)
+        {
+            var architecture = completed!.RootElement.GetProperty("artifacts").EnumerateArray().Single(item => item.GetProperty("artifactType").GetString() == "architecture-design" && item.GetProperty("version").GetInt32() == 1);
+            var architectureId = architecture.GetProperty("id").GetGuid();
+            using var revisedResponse = await client.PostAsJsonAsync($"/api/workflows/{workflowId}/brownfield/artifacts/{architectureId}/revise", new { contentReference = "architecture/api-v2", contentHash = "architecture-api-hash-v2" });
+            using var revised = JsonDocument.Parse(await revisedResponse.Content.ReadAsStringAsync());
+            Assert.Equal("Planning", revised.RootElement.GetProperty("state").GetString());
+            Assert.Equal(2, revised.RootElement.GetProperty("planRevisions").GetArrayLength());
+            Assert.Contains(revised.RootElement.GetProperty("events").EnumerateArray(), item => item.GetProperty("eventType").GetString() == "ImpactAnalysisCompleted");
+        }
+    }
+
     private sealed record ApiError(string Code, string Message);
 }
 
