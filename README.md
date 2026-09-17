@@ -17,7 +17,7 @@ dotnet run --project AgenticSoftwareEngineering.Api
 
 The API uses one local SQLite database, applies pending EF migrations at startup, and exposes Swagger at `/swagger`. This startup migration behavior is a prototype convenience; production deployments should use a governed migration process. The deterministic provider is the default execution path. No external AI key, cloud account, external database, or paid service is required.
 
-The accepted Gate 6 baseline has 96 passing tests. A clean-clone verification is reserved for Gate 8 and has not been claimed here.
+The final verified baseline has 96 passing tests. Gate 8 clean-clone verification confirmed the repository can be restored, built, tested, migrated, and demonstrated without external AI credentials.
 
 ## Reviewer Path
 
