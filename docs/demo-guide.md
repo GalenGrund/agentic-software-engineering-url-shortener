@@ -8,6 +8,8 @@ dotnet run --project AgenticSoftwareEngineering.Api
 
 Open `https://localhost:5001/swagger` or the URL printed by ASP.NET Core. The exact development port may vary with local launch settings; Swagger is the easiest way to inspect the live contract.
 
+For the architecture, terminology, trust boundaries, and scenario workflow diagrams behind this walkthrough, see [Architecture](architecture.md).
+
 ## 1. URL Shortener
 
 Create a link:
@@ -132,12 +134,10 @@ The status then exposes `ClarificationProvided`, `RequirementReassessed`, `Clari
 
 ## 7. Test and Reproducibility Commands
 
-The accepted Gate 6 baseline reports 96 passing tests:
+The final verified baseline has 96 passing tests. Clean-clone verification confirmed that the repository can be restored, built, tested, migrated, and demonstrated without external AI credentials. No vulnerable NuGet packages were reported, and strict OpenSpec validation succeeded.
 
 ```powershell
 dotnet restore AgenticSoftwareEngineering.slnx
 dotnet build AgenticSoftwareEngineering.slnx --configuration Release --no-restore
 dotnet test AgenticSoftwareEngineering.slnx --configuration Release --no-restore
 ```
-
-Gate 8 will independently verify these steps from a clean clone. Gate 7 does not claim that clean-room verification is complete.
